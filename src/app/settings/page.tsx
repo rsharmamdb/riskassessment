@@ -378,7 +378,7 @@ export default function SettingsPage() {
                 <Label>
                   MongoGPT API URL{" "}
                   <span className="text-ink-500 font-normal">
-                    (PremServ / LLM Inference — base host only)
+                    (LLM Inference — base host only)
                   </span>
                 </Label>
                 <Input
@@ -387,7 +387,7 @@ export default function SettingsPage() {
                   placeholder="https://mongogpt.aix.prod.corp.mongodb.com"
                 />
                 <p className="text-[11px] text-ink-500 mt-1">
-                  Same as PremServ: requests go to{" "}
+                  Requests go to{" "}
                   <code className="text-ink-300">…/api/v1/messages</code> with{" "}
                   <code className="text-ink-300">X-Kanopy-Authorization</code>{" "}
                   (server fills the JWT via kanopy-oidc).
@@ -550,7 +550,7 @@ export default function SettingsPage() {
       <Card>
         <CardHeader
           title="Glean (MCP)"
-          subtitle="Same endpoint as PremServ predefined Glean server (mongodb-be.glean.com/mcp/default). SSO or static token."
+          subtitle="Predefined Glean MCP server (mongodb-be.glean.com/mcp/default). SSO or static token."
         />
         <CardBody className="space-y-4">
           <div>

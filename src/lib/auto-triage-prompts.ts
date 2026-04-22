@@ -1,10 +1,6 @@
 /**
  * Auto Triage Chat prompt templates.
  *
- * Lifted verbatim from PremServ Workspace
- * (extension/src/tools/auto-triage-assistant/prompt-templates.ts) so output
- * shape matches what TS engineers already see in the Hub side-panel.
- *
  * The prompts are sent as the `input` query param of a GET request to
  * /api/ai/autoTriageChat — the bot resolves `{placeholders}` by calling its
  * own tools (`get_mongodb_case_comments`, `find_summaries_by_filter`, etc.).

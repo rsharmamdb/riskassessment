@@ -1,11 +1,5 @@
 /**
- * Embedded copy of the Risk Assessment skill playbook.
- *
- * Source: premserv-workspace/extension/src/tools/premserv-agent/skills/
- *          operations/risk-assessment.md
- *
- * We inline it here so the app has a single-file, dependency-free copy of
- * the exact workflow the PremServ agent follows. It is fed to the LLM as
+ * Embedded copy of the Risk Assessment skill playbook. Fed to the LLM as
  * the system prompt during report synthesis.
  */
 

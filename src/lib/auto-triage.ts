@@ -93,9 +93,8 @@ export async function getUserEmail(): Promise<string> {
 
 /**
  * Hub's SSE stream occasionally drops the first 5–8 chars of the assistant's
- * reply (observed in PremServ). If what we get back starts with a telltale
- * broken-label fragment, prepend `**Status:** `. Lifted from the PremServ
- * background worker to keep output quality parity.
+ * reply. If what we get back starts with a telltale broken-label fragment,
+ * prepend `**Status:** `.
  */
 function fixTruncatedText(text: string): string {
   const patterns = [

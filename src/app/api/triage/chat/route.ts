@@ -8,7 +8,7 @@
  *     sessionId?: string;              // defaults to `${email}-${now}`
  *     pathname?:  string;              // e.g. `/case/01234567`
  *     label?:     string;              // e.g. `Case: 01234567`
- *     // OR supply { promptId, variables } to render one of the named PremServ templates:
+ *     // OR supply { promptId, variables } to render one of the named templates:
  *     promptId?:  PromptId;
  *     variables?: Record<string, string>;
  *     userEmail?: string;              // used when generating a sessionId

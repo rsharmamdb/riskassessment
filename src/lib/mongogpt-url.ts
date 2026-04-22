@@ -1,5 +1,5 @@
 /**
- * MongoGPT URL normalization — matches PremServ / LLM Inference:
+ * MongoGPT URL normalization:
  *   apiUrl is typically `https://mongogpt.aix.prod.corp.mongodb.com` (no path).
  *   Requests go to `…/api/v1/messages` with `X-Kanopy-Authorization: Bearer <jwt>`.
  *

@@ -26,7 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openaiModel: "gpt-4o",
   anthropicApiKey: "",
   anthropicModel: "claude-sonnet-4-5",
-  // PremServ-style base URL (no path); server resolves to /api/v1/messages
+  // Base URL (no path); server resolves to /api/v1/messages
   mongogptUrl: "https://mongogpt.aix.prod.corp.mongodb.com",
   mongogptModel: "",
   mongogptToken: "",

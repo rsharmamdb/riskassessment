@@ -502,7 +502,7 @@ export function CaseAnalysis() {
             <StepHeading
               eyebrow="Step 1"
               title="Customer Context"
-              description="Sets the account scope and timeframe. Account name becomes the Glean `query`; 1 month → `updated: past_month`, longer → `after` (PremServ-style case search)."
+              description="Sets the account scope and timeframe. Account name becomes the Glean `query`; 1 month → `updated: past_month`, longer → `after`."
             />
             <div className="grid sm:grid-cols-2 gap-5">
               <div className="sm:col-span-2">
@@ -566,7 +566,7 @@ export function CaseAnalysis() {
               <StepHeading
                 eyebrow="Step 2"
                 title="Glean search"
-                description="Calls Glean MCP `search` (same defaults as PremServ ntse-case-review: app=servicecloud, exhaustive, date from Step 1). MCP URL defaults to …/mcp/default. Edit JSON to broaden."
+                description="Calls Glean MCP `search` (defaults: app=servicecloud, exhaustive, date from Step 1). MCP URL defaults to …/mcp/default. Edit JSON to broaden."
                 right={
                   <div className="flex items-center gap-2">
                     {gleanSso?.hasToken ? (

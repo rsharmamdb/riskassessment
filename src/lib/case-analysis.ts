@@ -90,9 +90,9 @@ export interface AnalyzeResult {
  * Using `app=servicecloud` keeps the result set tight to support cases
  * (vs generic account/opportunity records in salescloud).
  *
- * Aligned with Glean MCP `search` schema + premserv playbooks:
+ * Aligned with Glean MCP `search` schema:
  * - Prefer short `query` (no stuffing).
- * - Prefer `updated: "past_month"` for a 1-month window (same as ntse-case-review default).
+ * - Prefer `updated: "past_month"` for a 1-month window.
  * - For longer windows use `after` (YYYY-MM-DD). Glean treats `after` as *exclusive*,
  *   so we subtract one calendar day from the cutoff so the boundary week still qualifies.
  * - Omit `sort_by_recency` by default — relevance tends to surface case matches better

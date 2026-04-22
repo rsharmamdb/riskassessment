@@ -1,10 +1,9 @@
 /**
  * Minimal server-side MCP (Model Context Protocol) JSON-RPC client.
  *
- * Adapted from the PremServ extension's mcp-manager, stripped of
- * chrome.* dependencies and simplified for a single request/response
- * pattern behind a Next.js API route. Each call opens a short-lived
- * session (initialize -> notifications/initialized -> tools/call).
+ * Each call opens a short-lived session
+ * (initialize -> notifications/initialized -> tools/call) behind a
+ * Next.js API route.
  */
 
 import type { MCPServerConfig, MCPToolCallResult } from "./types";
