@@ -1,0 +1,140 @@
+/* ── MongoDB CDN Fonts ──────────────────────────────────────────────────────── */
+@font-face {
+  font-family: 'EuclidCircularA';
+  src: url('https://assets.mongodb-cdn.com/mms/static/font/EuclidCircularA-Regular-WebXL.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'EuclidCircularA';
+  src: url('https://assets.mongodb-cdn.com/mms/static/font/EuclidCircularA-Medium-WebXL.woff2') format('woff2');
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'EuclidCircularA';
+  src: url('https://assets.mongodb-cdn.com/mms/static/font/EuclidCircularA-Semibold-WebXL.woff2') format('woff2');
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'MongoDBValueSerif';
+  src: url('https://assets.mongodb-cdn.com/mms/static/font/MongoDBValueSerif-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+
+  --background:         #0A0E1A;
+  --surface:            #0F1927;
+  --foreground:         #F1F5F9;
+  --card:               #111827;
+  --card-foreground:    #F1F5F9;
+  --border:             #1E2D3D;
+  --input:              #1E2D3D;
+  --primary:            #3B82F6;
+  --primary-hover:      #2563EB;
+  --primary-foreground: #FFFFFF;
+  --muted:              #0D1424;
+  --muted-foreground:   #64748B;
+  --accent:             #3B82F6;
+  --destructive:        #EF4444;
+  --radius:             8px;
+  --font-sans:          'EuclidCircularA', 'DM Sans', system-ui, sans-serif;
+  --font-mono:          ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+
+  --severity-critical:  #EF4444;
+  --severity-sig:       #F59E0B;
+  --severity-roadmap:   #64748B;
+  --severity-low:       #475569;
+
+  --status-open:        #EF4444;
+  --status-ack:         #F59E0B;
+  --status-action:      #3B82F6;
+  --status-mitigated:   #10B981;
+}
+
+html, body {
+  background: #0A0E1A;
+  color: #F1F5F9;
+  font-family: 'EuclidCircularA', 'DM Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  position: relative;
+  min-height: 100vh;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: auto auto 0 0;
+  width: 38rem;
+  height: 38rem;
+  pointer-events: none;
+  opacity: 0.08;
+  background-repeat: no-repeat;
+  background-size: contain;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512' fill='none'%3E%3Cg stroke='%2394A3B8' stroke-width='2'%3E%3Cpath d='M48 432h120v-64h64v-72h88v-96h80'/%3E%3Cpath d='M96 512V400h72v-72h88v-64h96V136h112'/%3E%3Cpath d='M0 336h112v-88h96v-80h120V64h144'/%3E%3Cpath d='M160 512v-88h80v-64h88v-96h120'/%3E%3C/g%3E%3Cg fill='%2394A3B8'%3E%3Ccircle cx='168' cy='368' r='6'/%3E%3Ccircle cx='232' cy='296' r='6'/%3E%3Ccircle cx='320' cy='200' r='6'/%3E%3Ccircle cx='112' cy='248' r='6'/%3E%3Ccircle cx='240' cy='424' r='6'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* ── Report prose ─────────────────────────────────────────────────────────── */
+.report-prose { font-size: 13px; line-height: 1.65; color: #CBD5E1; }
+.report-prose h1 { @apply text-xl font-semibold mt-6 mb-3; color: #F1F5F9; }
+.report-prose h2 { @apply text-base font-semibold mt-5 mb-2 border-b pb-1.5; color: #F1F5F9; border-color: #1E2D3D; }
+.report-prose h3 { @apply text-[13px] font-semibold mt-4 mb-1.5; color: #CBD5E1; }
+.report-prose p  { @apply my-2 leading-relaxed; color: #94A3B8; }
+.report-prose ul { @apply list-disc pl-5 my-2 space-y-0.5; color: #94A3B8; }
+.report-prose ol { @apply list-decimal pl-5 my-2 space-y-0.5; color: #94A3B8; }
+.report-prose li { @apply leading-relaxed; }
+.report-prose code {
+  font-family: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  @apply border px-1 py-0.5 text-[11px];
+  background: #0D1424;
+  border-color: #1E2D3D;
+  color: #F1F5F9;
+  border-radius: 6px;
+}
+.report-prose pre {
+  font-family: ui-monospace, 'SFMono-Regular', 'Menlo', monospace;
+  @apply border p-3 my-3 overflow-x-auto text-[11px];
+  background: #0D1424;
+  border-color: #1E2D3D;
+  color: #CBD5E1;
+  border-radius: 8px;
+}
+.report-prose pre code { @apply bg-transparent border-0 p-0; }
+.report-prose table { @apply w-full my-3 text-[12px] border-collapse; }
+.report-prose th,
+.report-prose td  { @apply border px-3 py-1.5 text-left align-top; border-color: #1E2D3D; }
+.report-prose th  { @apply font-medium; background: #0D1424; color: #94A3B8; }
+.report-prose tr:nth-child(even) td { background: #0D1424; }
+.report-prose blockquote {
+  @apply border-l-2 pl-3 my-3 not-italic;
+  border-color: #3B82F6;
+  color: #94A3B8;
+}
+.report-prose a    { color: #60A5FA; @apply no-underline hover:underline; }
+.report-prose hr   { @apply my-4; border-color: #1E2D3D; }
+.report-prose strong { @apply font-semibold; color: #F1F5F9; }
+
+/* ── Focus ring ────────────────────────────────────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid #3B82F6;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #475569; }

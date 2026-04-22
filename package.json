@@ -1,0 +1,30 @@
+{
+  "name": "risksi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone Risk Register Report generator — orchestrates Glean (MCP), Monday.com, and Auto Triage Chat (human-in-the-loop) to draft risk registers for customer accounts.",
+  "scripts": {
+    "dev": "next dev -p 4321",
+    "build": "next build",
+    "start": "next start -p 4321",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "mongodb": "^7.1.1",
+    "next": "^15.0.3",
+    "puppeteer": "^24.41.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3"
+  }
+}
