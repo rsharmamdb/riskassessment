@@ -4,10 +4,28 @@
  * POST /api/db/assessments                 — upsert (save) an assessment
  */
 import { NextResponse } from "next/server";
+import type { Collection, Document } from "mongodb";
 import { getDb } from "@/lib/mongo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+let _indexesEnsured = false;
+async function ensureIndexes(col: Collection<Document>) {
+  if (_indexesEnsured) return;
+  try {
+    // One assessment per Salesforce ID. Sparse so older name-only docs
+    // (if any) don't conflict with the unique constraint.
+    await col.createIndex(
+      { "input.salesforceId": 1 },
+      { name: "sfId_unique", unique: true, sparse: true },
+    );
+    await col.createIndex({ updatedAt: -1 }, { name: "updatedAt_desc" });
+    _indexesEnsured = true;
+  } catch (err) {
+    console.warn("[assessments] ensureIndexes failed:", (err as Error).message);
+  }
+}
 
 export async function GET(req: Request) {
   try {
@@ -24,7 +42,11 @@ export async function GET(req: Request) {
       const doc = await col.findOne(filter, { sort: { updatedAt: -1 } });
       return NextResponse.json({ ok: true, assessment: doc });
     }
-    // List distinct accounts with latest update time
+    // List distinct accounts with latest update time.
+    // `report` is included so the client can parse the Overall Risk Rating
+    // tag (RED / YELLOW / GREEN) without a second round-trip. If we later
+    // need to keep responses lean, switch to a server-side parse + a single
+    // `rating` field.
     const list = await col
       .aggregate([
         { $sort: { updatedAt: -1 } },
@@ -36,6 +58,7 @@ export async function GET(req: Request) {
             hasReport: { $first: "$hasReport" },
             salesforceId: { $first: "$input.salesforceId" },
             canonicalName: { $first: "$input.canonicalName" },
+            report: { $first: "$report" },
           },
         },
         { $sort: { updatedAt: -1 } },
@@ -62,6 +85,7 @@ export async function POST(req: Request) {
     }
     const db = await getDb();
     const col = db.collection("assessments");
+    await ensureIndexes(col);
     const now = new Date().toISOString();
 
     await col.updateOne(

@@ -103,7 +103,17 @@ export function buildCaseSearchArgs(params: {
   timeframeMonths: number;
   extraKeywords?: string;
 }): Record<string, unknown> {
-  const query = [params.accountName, params.extraKeywords]
+  // Severity/escalation keywords nudge Glean's relevance ranking toward
+  // high-signal cases for risk review. Glean's `app=servicecloud` doesn't
+  // expose strict severity filters, so we lean on textual relevance — the
+  // text matching is loose enough that Sev3/Sev4 with none of these
+  // keywords still rank lower, while escalated / Sev1-Sev2 threads bubble
+  // up. The DISCOVER_ACCOUNT_CASES_PROMPT (bot-driven discovery) remains
+  // the primary filter; this just helps the Glean fallback match the
+  // same scope.
+  const SIGNAL_KEYWORDS =
+    "Sev1 Sev2 escalation escalated production down outage HELP SERVER CLOUDP";
+  const query = [params.accountName, SIGNAL_KEYWORDS, params.extraKeywords]
     .filter(Boolean)
     .join(" ")
     .trim();

@@ -15,7 +15,7 @@
  *   - { type: "error",       error }
  */
 
-import { RISK_ASSESSMENT_SKILL, buildLgtmBlock, formatCaseIntelligenceBlock, titleCase } from "@/lib/risk-skill";
+import { RISK_ASSESSMENT_SKILL, formatCaseIntelligenceBlock, titleCase } from "@/lib/risk-skill";
 import {
   AGENT_TOOLS,
   createAgentContext,
@@ -87,15 +87,7 @@ Final output rules:
 - Keep the document INTERNAL ONLY banner at the top.
 - Set Author(s) to "MongoDB Technical Services".
 - For every case reference, link it as [Case XXXXXXXX](https://hub.corp.mongodb.com/case/XXXXXXXX) where XXXXXXXX is the case number (digits only, no dashes).
-- Include an Appendix D (LGTM Tracking) section after Appendix C using this exact table:
-  | Reviewer | Role | LGTM Date |
-  |----------|------|-----------|
-  | {name or —} | AE | — |
-  | {name or —} | CSM | — |
-  | {name or —} | PS | — |
-  Populate reviewer names by scanning ALL provided artifacts — especially the Stakeholder Map artifact and any artifact that lists account team members from Salesforce.
-  Role mapping rules: "Account Executive", "Account Owner", "AE" → AE row; "Primary CSM", "Account CSM", "Customer Success Manager", "CSM" → CSM row; "Professional Services", "PS", "Solutions Architect" explicitly listed as PS → PS row.
-  Prefer Salesforce/account-team sources. If a reviewer is not known after scanning all artifacts, use "—" — NEVER write "pending" as a name. Do not omit any of the three rows.
+- Do NOT emit an LGTM / sign-off appendix. Appendix C (Account Timeline) is the final appendix.
 - The Account Timeline (Appendix C) must use this EXACT table format \u2014 no bullets, no numbered lists, always a table:
   | Date | Ticket / Reference | Summary |
   |------|-------------------|---------|
@@ -181,8 +173,6 @@ function buildInitialUserMessage(
     `Timeframe: last ${input.timeframeMonths} months (${timelineStart} to ${timelineEnd})`,
     `IMPORTANT: The Case Review Timeline in the report MUST be "${timelineStart} to ${timelineEnd}". Do NOT use any other date range. Ignore case dates that fall outside this window.`,
     input.knownConcerns ? `Known concerns: ${input.knownConcerns}` : null,
-    "",
-    artifacts.length > 0 ? buildLgtmBlock(artifacts) : null,
     "",
     artifactsBlock
       ? artifactsBlock

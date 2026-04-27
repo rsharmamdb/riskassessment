@@ -6,6 +6,7 @@
  */
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer";
+import { marked } from "marked";
 import { BRAND_LOGO_SVG, BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
 
 export const runtime = "nodejs";
@@ -31,75 +32,12 @@ function normalizeCaseLinks(md: string): string {
   );
 }
 
-/** Very basic markdown → HTML. Covers headers, tables, bold, links, lists, code blocks, hr. */
+/** Markdown → HTML via `marked`. Covers full GFM: h1-h6, ordered & unordered
+ *  lists, tables, fenced code blocks, inline code, links, emphasis, hr. */
 function mdToHtml(md: string): string {
-  let html = md;
-
-  // Code blocks
-  html = html.replace(/```[\s\S]*?```/g, (block) => {
-    const inner = block.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
-    return `<pre><code>${inner}</code></pre>`;
-  });
-
-  // Tables
-  html = html.replace(
-    /^(\|.+\|)\n(\|[\s:|-]+\|)\n((?:\|.+\|\n?)+)/gm,
-    (_match, headerRow: string, _sep: string, bodyRows: string) => {
-      const headers = headerRow
-        .split("|")
-        .filter((c: string) => c.trim())
-        .map((c: string) => `<th>${c.trim()}</th>`)
-        .join("");
-      const rows = bodyRows
-        .trim()
-        .split("\n")
-        .map((row: string) => {
-          const cells = row
-            .split("|")
-            .filter((c: string) => c.trim() !== "")
-            .map((c: string) => `<td>${c.trim()}</td>`)
-            .join("");
-          return `<tr>${cells}</tr>`;
-        })
-        .join("");
-      return `<div class="section-block"><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`;
-    },
-  );
-
-  // Headings
-  html = html.replace(/^#### (.+)$/gm, "<h4>$1</h4>");
-  html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
-  html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
-  html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
-
-  // Bold
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-
-  // Links
-  html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2">$1</a>',
-  );
-
-  // Horizontal rules
-  html = html.replace(/^---+$/gm, "<hr />");
-
-  // Unordered lists
-  html = html.replace(/^- (.+)$/gm, "<li>$1</li>");
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, "<ul>$1</ul>");
-
-  // Paragraphs — wrap remaining non-tag lines
-  html = html
-    .split("\n\n")
-    .map((block) => {
-      const trimmed = block.trim();
-      if (!trimmed) return "";
-      if (/^</.test(trimmed)) return trimmed;
-      return `<p>${trimmed.replace(/\n/g, "<br/>")}</p>`;
-    })
-    .join("\n");
-
-  return html;
+  // `async: false` makes marked return synchronously; we only use built-in
+  // renderers so no async extensions are in play.
+  return marked.parse(md, { async: false, gfm: true, breaks: false }) as string;
 }
 
 /**
@@ -321,22 +259,27 @@ function buildFullHtml(
   h1 { font-size: 22px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; page-break-after: avoid; }
   h2 { font-size: 17px; color: #00684A; margin-top: 28px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; page-break-after: avoid; }
   h3 { font-size: 14px; color: #334155; margin-top: 20px; page-break-after: avoid; }
-  h4 { font-size: 13px; color: #475569; margin-top: 16px; page-break-after: avoid; }
+  h4 { font-size: 13px; color: #475569; margin-top: 16px; page-break-after: avoid; font-weight: 700; }
+  h5 { font-size: 12px; color: #64748b; margin-top: 12px; margin-bottom: 4px; page-break-after: avoid; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+  h6 { font-size: 11px; color: #94a3b8; margin-top: 10px; margin-bottom: 3px; page-break-after: avoid; font-weight: 600; }
   table { border-collapse: collapse; width: 100%; margin: 12px 16px; font-size: 12px; page-break-inside: avoid; }
   th { background: #f1f5f9; text-align: left; padding: 8px 10px; border: 1px solid #e2e8f0; font-weight: 600; color: #334155; }
   td { padding: 6px 10px; border: 1px solid #e2e8f0; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word; }
   tr:nth-child(even) td { background: #f8fafc; }
   /* Keep sections together — heading + first bit of content */
-  h1 + *, h2 + *, h3 + *, h4 + * { page-break-before: avoid; }
+  h1 + *, h2 + *, h3 + *, h4 + *, h5 + *, h6 + * { page-break-before: avoid; }
   /* Prevent sections from being orphaned */
   section, .section-block { page-break-inside: avoid; }
   p, li { orphans: 3; widows: 3; }
   a { color: #2563eb; text-decoration: underline; }
-  pre { background: #f1f5f9; padding: 10px; border-radius: 4px; font-size: 11px; overflow-x: auto; }
-  code { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 11px; }
+  pre { background: #f1f5f9; padding: 10px 12px; border-radius: 4px; font-size: 10.5px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border-left: 3px solid #cbd5e1; line-height: 1.4; }
+  pre code { background: transparent; padding: 0; font-size: inherit; }
+  code { font-family: 'SF Mono', Monaco, Consolas, monospace; font-size: 11px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
   hr { border: none; border-top: 1px solid #e2e8f0; margin: 20px 0; }
-  ul { padding-left: 20px; }
+  ul, ol { padding-left: 22px; margin: 6px 0; }
   li { margin: 4px 0; }
+  li > p { margin: 2px 0; }
+  blockquote { border-left: 3px solid #cbd5e1; margin: 8px 0; padding: 4px 12px; color: #475569; background: #f8fafc; }
   .internal-banner {
     background: #fef2f2;
     border: 1px solid #fecaca;

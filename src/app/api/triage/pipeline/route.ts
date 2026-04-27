@@ -26,10 +26,12 @@
 import {
   runCaseIntelligence,
   extractCasesFromArtifacts,
+  discoverCasesViaBot,
   type PipelineEvent,
 } from "@/lib/auto-triage-pipeline";
 import { getUserEmail } from "@/lib/auto-triage";
 import { createMongoCaseIntelCache } from "@/lib/case-intel-cache";
+import { createMongoAccountHealthCache } from "@/lib/account-health-cache";
 import type { GatheredArtifact } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -44,6 +46,9 @@ interface Body {
   cases?: string[];
   artifacts?: GatheredArtifact[];
   concurrency?: number;
+  /** Lookback window used by the Auto Triage bot's case-discovery call.
+   *  Defaults to 6 months when omitted. */
+  timeframeMonths?: number;
   /** When true, bypass the cache entirely (forces fresh Hub calls). */
   forceRefresh?: boolean;
 }
@@ -59,23 +64,14 @@ export async function POST(req: Request) {
   if (!body.accountName) return sseError("Missing accountName", 400);
 
   const userEmail = body.userEmail || (await getUserEmail());
+  const timeframeMonths = body.timeframeMonths ?? 6;
 
-  // Resolve case list: prefer explicit `cases`, fall back to extracting
-  // from Glean artifacts — the "Glean-first" strategy the user picked.
+  // Glean artifacts are always mined (cheap, synchronous). Bot discovery is
+  // a second source — kicks off inside the stream below so the client sees
+  // a "discovering…" event.
   const casesFromArtifacts = body.artifacts
     ? extractCasesFromArtifacts(body.artifacts)
     : [];
-  const cases =
-    body.cases && body.cases.length > 0 ? body.cases : casesFromArtifacts;
-  const caseSource: "provided" | "artifacts" =
-    body.cases && body.cases.length > 0 ? "provided" : "artifacts";
-
-  if (cases.length === 0) {
-    return sseError(
-      "No case numbers found. Pass `cases` explicitly or provide Glean `artifacts` that cite hub.corp.mongodb.com/case/<number>.",
-      400,
-    );
-  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -90,15 +86,85 @@ export async function POST(req: Request) {
         }
       };
 
+      // Bot-driven case discovery — authoritative source when the Hub bot
+      // can enumerate by account. Failures are non-fatal; we'll union with
+      // Glean extraction and fall back to Glean-only if the bot returned
+      // nothing.
+      let caseSource: "provided" | "bot+glean" | "bot" | "artifacts" = "artifacts";
+      let bot: { cases: string[]; reason: string | null } = { cases: [], reason: null };
+      if (body.cases && body.cases.length > 0) {
+        caseSource = "provided";
+      } else {
+        send({
+          type: "status",
+          message: "Discovering cases via the Hub Auto Triage bot…",
+        });
+        bot = await discoverCasesViaBot({
+          accountName: body.accountName!,
+          salesforceId: body.salesforceId,
+          timeframeMonths,
+          userEmail,
+        });
+        send({
+          type: "discovery_done",
+          botCases: bot.cases.length,
+          gleanCases: casesFromArtifacts.length,
+          botReason: bot.reason,
+        });
+      }
+
+      // Union: bot ∪ glean, preserving 8-digit 0-leading case numbers only.
+      // Hard safety cap at MAX_CASES_PER_RUN so a bot that ignores the
+      // discovery prompt's "at most 25" instruction can't drive the pipeline
+      // into a 100+ case run. Sort is lexicographic (case numbers are
+      // monotonic-ish with opening time) so a truncation slice is stable.
+      const MAX_CASES_PER_RUN = 15;
+      let merged: string[];
+      if (body.cases && body.cases.length > 0) {
+        merged = body.cases;
+      } else {
+        merged = [...new Set<string>([...bot.cases, ...casesFromArtifacts])]
+          .filter((c) => /^0\d{7}$/.test(c))
+          // Most recent first — case numbers grow monotonically, so descending sort = newest first.
+          .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+          .slice(0, MAX_CASES_PER_RUN);
+      }
+
+      if (caseSource !== "provided") {
+        caseSource = bot.cases.length > 0
+          ? casesFromArtifacts.length > 0
+            ? "bot+glean"
+            : "bot"
+          : "artifacts";
+      }
+
+      if (merged.length === 0) {
+        send({
+          type: "error",
+          error:
+            "No case numbers found. Bot discovery returned 0 and no Glean artifacts cite `hub.corp.mongodb.com/case/<number>`." +
+            (bot.reason ? ` Bot reason: ${bot.reason}` : ""),
+        });
+        controller.close();
+        return;
+      }
+
       send({
         type: "cases_resolved",
-        cases,
+        cases: merged,
         source: caseSource,
+        sources: {
+          bot: bot.cases.length,
+          glean: casesFromArtifacts.length,
+          merged: merged.length,
+        },
       });
+      const cases = merged;
 
-      // MongoDB-backed cache is always attached so write-back runs; the
+      // MongoDB-backed caches are always attached so write-back runs; the
       // `forceRefresh` flag controls whether we honor cached hits.
       const cache = createMongoCaseIntelCache();
+      const accountHealthCache = createMongoAccountHealthCache();
 
       try {
         await runCaseIntelligence({
@@ -109,6 +175,7 @@ export async function POST(req: Request) {
           concurrency: body.concurrency,
           notify: send,
           cache,
+          accountHealthCache,
           forceRefresh: body.forceRefresh,
         });
       } catch (err) {

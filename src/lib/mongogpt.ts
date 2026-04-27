@@ -136,8 +136,140 @@ export function parseMongoGptStream(body: string): string {
   return out;
 }
 
+/**
+ * Streaming variant of callMongoGpt — invokes `onChunk` with each text
+ * delta as it arrives and resolves to the full concatenated text on
+ * end-of-stream. Keeps the HTTP connection warm so long-running syntheses
+ * don't hit headers/body timeouts that bit a buffered request.
+ *
+ * Parses the same OpenAI-compatible SSE frames as parseMongoGptStream(),
+ * but incrementally: partial frames straddling chunk boundaries are held
+ * in a line buffer until complete.
+ */
+export async function callMongoGptStream(
+  opts: CallMongoGptOpts & { onChunk?: (text: string, fullSoFar: string) => void },
+): Promise<string> {
+  const { url, token, model, messages, timeoutMs = 900_000, onChunk } = opts;
+  if (!token) throw new Error("Missing MongoGPT token.");
+  if (!url) throw new Error("Missing MongoGPT URL.");
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-Kanopy-Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({ model, messages, stream: true }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+
+  if (!res.ok) {
+    clearTimeout(timer);
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `MongoGPT HTTP ${res.status} ${res.statusText}: ${text.slice(0, 600)}`,
+    );
+  }
+  if (!res.body) {
+    clearTimeout(timer);
+    throw new Error("MongoGPT returned no stream body.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+
+  const extractTextFromFrame = (line: string): string | null => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) return null;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") return null;
+
+    if (payload.startsWith('"')) {
+      try {
+        const parsed = JSON.parse(payload);
+        if (typeof parsed === "string") return parsed;
+      } catch {
+        /* fall through */
+      }
+    }
+    if (payload.startsWith("{")) {
+      try {
+        const obj = JSON.parse(payload) as Record<string, unknown>;
+        const text =
+          (obj.content as string | undefined) ??
+          (obj.text as string | undefined) ??
+          ((obj.delta as Record<string, unknown> | undefined)?.content as
+            | string
+            | undefined) ??
+          (((obj.choices as Array<Record<string, unknown>> | undefined)?.[0]
+            ?.delta as Record<string, unknown> | undefined)?.content as
+            | string
+            | undefined);
+        if (typeof text === "string") return text;
+      } catch {
+        /* ignore */
+      }
+    }
+    // Last-ditch: `data: "some text"` without quotes around the whole.
+    const naive = payload.split('"');
+    if (naive.length >= 2) return naive[1] ?? null;
+    return null;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Drain complete lines, leave a partial tail in `buffer`.
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        const text = extractTextFromFrame(line);
+        if (text) {
+          full += text;
+          onChunk?.(text, full);
+        }
+        nl = buffer.indexOf("\n");
+      }
+    }
+    // Drain any final partial line.
+    if (buffer.trim().length > 0) {
+      const text = extractTextFromFrame(buffer);
+      if (text) {
+        full += text;
+        onChunk?.(text, full);
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!full.trim()) {
+    throw new Error("MongoGPT streaming returned no text content.");
+  }
+  return full;
+}
+
 export async function callMongoGpt(opts: CallMongoGptOpts): Promise<string> {
-  const { url, token, model, messages, timeoutMs = 120_000 } = opts;
+  // Large artifact sets + verbose Evidence/Recurrence prompts can push
+  // reasoning-model synthesis past 10 minutes. Keeping headroom at 15 min
+  // matches /api/generate's maxDuration bump.
+  const { url, token, model, messages, timeoutMs = 900_000 } = opts;
   if (!token) throw new Error("Missing MongoGPT token.");
   if (!url) throw new Error("Missing MongoGPT URL.");
 
@@ -195,7 +327,8 @@ export async function callMongoGptTools(
     toolChoice = "auto",
     temperature,
     maxTokens,
-    timeoutMs = 180_000,
+    // See callMongoGpt comment — keep headroom for slow reasoning models.
+    timeoutMs = 900_000,
   } = opts;
   if (!token) throw new Error("Missing MongoGPT token.");
   if (!url) throw new Error("Missing MongoGPT URL.");

@@ -49,8 +49,8 @@ const EVENT_LABELS: Record<string, string> = {
   report_page_viewed: "Report page viewed",
   report_downloaded_md: ".md downloaded",
   pdf_exported: "PDF exported",
+  docx_exported: ".docx exported",
   risk_status_changed: "Risk status changed",
-  lgtm_approved: "LGTM approved",
 };
 
 /** Number of ms for a given window. `all` maps to Infinity. */
@@ -122,6 +122,7 @@ export default function UsagePage() {
   // ---------- per-report table ----------
   interface AccountAgg {
     account: string;
+    salesforceId?: string;
     lastGenerated?: string;
     reports: number;
     views: number;
@@ -144,6 +145,7 @@ export default function UsagePage() {
       triageReused: 0,
       triageFetched: 0,
     });
+    if (e.salesforceId && !a.salesforceId) a.salesforceId = e.salesforceId;
     if (e.event === "report_generated") {
       a.reports++;
       if (!a.lastGenerated || e.ts > a.lastGenerated) a.lastGenerated = e.ts;
@@ -360,12 +362,18 @@ export default function UsagePage() {
                         className="border-b border-ink-700/50 hover:bg-accent-900"
                       >
                         <td className="py-2 pr-4 text-ink-200">
-                          <Link
-                            href={`/reports/${encodeURIComponent(a.account)}`}
-                            className="hover:text-accent-400"
-                          >
-                            {a.account}
-                          </Link>
+                          {a.salesforceId ? (
+                            <Link
+                              href={`/reports/${encodeURIComponent(a.salesforceId)}`}
+                              className="hover:text-accent-400"
+                            >
+                              {a.account}
+                            </Link>
+                          ) : (
+                            <span className="text-ink-400" title="No Salesforce ID recorded">
+                              {a.account}
+                            </span>
+                          )}
                         </td>
                         <td className="py-2 pr-4 text-ink-400 whitespace-nowrap">
                           {a.lastGenerated
@@ -442,16 +450,32 @@ export default function UsagePage() {
               </div>
             ) : (
               <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                {staleAccounts.map((a) => (
-                  <Link
-                    key={a}
-                    href={`/reports/${encodeURIComponent(a)}`}
-                    className="flex items-center gap-2 text-[13px] hover:text-accent-400"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-warn flex-shrink-0" />
-                    <span className="text-ink-200">{a}</span>
-                  </Link>
-                ))}
+                {staleAccounts.map((a) => {
+                  const sfId = byAccount[a]?.salesforceId;
+                  const row = (
+                    <>
+                      <span className="w-2 h-2 rounded-full bg-warn flex-shrink-0" />
+                      <span className="text-ink-200">{a}</span>
+                    </>
+                  );
+                  return sfId ? (
+                    <Link
+                      key={a}
+                      href={`/reports/${encodeURIComponent(sfId)}`}
+                      className="flex items-center gap-2 text-[13px] hover:text-accent-400"
+                    >
+                      {row}
+                    </Link>
+                  ) : (
+                    <div
+                      key={a}
+                      className="flex items-center gap-2 text-[13px] text-ink-400"
+                      title="No Salesforce ID recorded"
+                    >
+                      {row}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </CardBody>

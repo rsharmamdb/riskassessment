@@ -31,6 +31,7 @@ import {
 } from "@/lib/risk-skill";
 import { track } from "@/lib/track";
 import { exportPdf } from "@/lib/pdf-export";
+import { exportDocx } from "@/lib/export-client";
 import type {
   AssessmentInput,
   AssessmentState,
@@ -103,8 +104,33 @@ const EMPTY_INPUT: AssessmentInput = {
   knownConcerns: "",
 };
 
-/** Days before a cached artifact is considered stale and re-fetched. */
-const FRESHNESS_DAYS = 30;
+/**
+ * Count actual evidence pieces fed to the LLM, unpacking the single
+ * `case-intelligence` artifact into its constituent parts (per-case
+ * summary + per-case precedents + N account-health batches). Without
+ * this, the Step 3 header reads "33 artifacts" even when we actually
+ * have 19+ additional triage sections packed inside one entry.
+ */
+function countActualArtifacts(artifacts: GatheredArtifact[]): number {
+  let total = 0;
+  for (const a of artifacts) {
+    if (a.kind === "case-intelligence") {
+      const data = (a.data ?? {}) as {
+        perCase?: Record<string, { summary?: string; precedents?: string }>;
+        accountHealth?: Array<{ markdown?: string }>;
+      };
+      const perCase = data.perCase ?? {};
+      for (const v of Object.values(perCase)) {
+        if (v?.summary) total++;
+        if (v?.precedents) total++;
+      }
+      total += (data.accountHealth ?? []).filter((h) => h?.markdown).length;
+    } else {
+      total++;
+    }
+  }
+  return total;
+}
 
 /** Persist current wizard state to MongoDB (returns true on success). */
 async function dbSave(state: {
@@ -159,8 +185,8 @@ async function dbLoadArtifacts(
     const res = await fetch(`/api/db/artifacts?${param}`);
     const json = await res.json();
     if (!json.ok) return [];
-    // Server already purges artifacts older than 30 days;
-    // anything returned is fresh enough to reuse.
+    // Artifacts are retained indefinitely; the caller decides when to
+    // force a refresh.
     return json.artifacts ?? [];
   } catch {
     return [];
@@ -381,6 +407,12 @@ export function Wizard() {
   const [triageRunning, setTriageRunning] = useState(false);
   const [triageLog, setTriageLog] = useState<TriageLogEntry[]>([]);
   const [triageResolvedCases, setTriageResolvedCases] = useState<string[]>([]);
+  const [triageDiscovery, setTriageDiscovery] = useState<{
+    bot: number;
+    glean: number;
+    merged: number;
+    botReason: string | null;
+  } | null>(null);
   const [triageSkipReason, setTriageSkipReason] = useState<string | null>(null);
   const [triageCacheCounts, setTriageCacheCounts] =
     useState<TriageCacheCounts | null>(null);
@@ -388,6 +420,7 @@ export function Wizard() {
   const [genError, setGenError] = useState<string | null>(null);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [pdfExporting, setPdfExporting] = useState(false);
+  const [docxExporting, setDocxExporting] = useState(false);
   const [reportFromCache, setReportFromCache] = useState(false);
   const [genProgress, setGenProgress] = useState<{ pct: number; label: string } | null>(null);
   const [dbOnline, setDbOnline] = useState<boolean | null>(null); // null = checking
@@ -402,9 +435,6 @@ export function Wizard() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupResult, setLookupResult] = useState<{ salesforceId: string; canonicalName: string } | null>(null);
   const [lookupError, setLookupError] = useState<string | null>(null);
-
-  /** 30-day TTL for cached reports and PDFs. */
-  const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
   // Load from MongoDB first, fall back to localStorage
   useEffect(() => {
@@ -495,8 +525,8 @@ export function Wizard() {
   const gleanAccountName = input.canonicalName || input.accountName || "{account}";
 
   const gleanQueries = useMemo(
-    () => buildGleanQueries(gleanAccountName),
-    [gleanAccountName],
+    () => buildGleanQueries(gleanAccountName, input.timeframeMonths),
+    [gleanAccountName, input.timeframeMonths],
   );
   const gleanChatPrompts = useMemo(
     () =>
@@ -545,13 +575,11 @@ export function Wizard() {
     }));
   }
 
-  /** Build a stable URL to the report page, always including sfId so the
-   *  report page can find the record even if the account name changed. */
+  /** Build a stable URL to the report page. Step 1's Continue button is gated
+   *  on `input.salesforceId` being set (see `canProceedFromContext`), so every
+   *  caller reaches this function with an sfId available. */
   function reportUrl(inp: AssessmentInput): string {
-    const slug = encodeURIComponent(inp.canonicalName || inp.accountName);
-    return inp.salesforceId
-      ? `/reports/${slug}?sfId=${encodeURIComponent(inp.salesforceId)}`
-      : `/reports/${slug}`;
+    return `/reports/${encodeURIComponent(inp.salesforceId!)}`;
   }
 
   async function runGather(forceRefresh = false) {
@@ -648,8 +676,9 @@ export function Wizard() {
         const label = q.label;
         setGatherLog((log) => [...log, { label, status: "pending" }]);
         try {
-          const args: Record<string, unknown> = { query: q.query, pageSize: 5 };
-          if (q.app) args.app = q.app;
+          const args: Record<string, unknown> = q.args
+            ? { ...q.args }
+            : { query: q.query, pageSize: 5, ...(q.app ? { app: q.app } : {}) };
           const res = await fetch("/api/glean/search", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -721,7 +750,6 @@ export function Wizard() {
       salesforceId: sfId ?? input.salesforceId,
       metadata: { forceRefresh, artifactCount: collected.length },
     });
-    setGathering(false);
 
     // Phase 2 — Auto Triage case intelligence. Runs case-summary +
     // precedent-research per extracted case, then account-support-health.
@@ -747,6 +775,7 @@ export function Wizard() {
         report,
       });
     }
+    setGathering(false);
   }
 
   /**
@@ -764,6 +793,7 @@ export function Wizard() {
     setTriageLog([]);
     setTriageResolvedCases([]);
     setTriageCacheCounts(null);
+    setTriageDiscovery(null);
 
     // Note: even if an artifact-level case-intelligence entry already
     // exists, we still re-run. The per-(case, prompt) MongoDB cache will
@@ -778,6 +808,7 @@ export function Wizard() {
           accountName,
           salesforceId: input.salesforceId,
           artifacts: artifacts.filter((a) => a.kind !== "case-intelligence"),
+          timeframeMonths: input.timeframeMonths,
           forceRefresh,
         }),
       });
@@ -817,11 +848,69 @@ export function Wizard() {
         } catch {
           return;
         }
-        if (evt.type === "cases_resolved") {
+        if (evt.type === "discovery_done") {
+          setTriageDiscovery({
+            bot: Number(evt.botCases) || 0,
+            glean: Number(evt.gleanCases) || 0,
+            merged: 0, // filled in on cases_resolved
+            botReason: (evt.botReason as string | null) ?? null,
+          });
+        } else if (evt.type === "cases_resolved") {
           const cases = (evt.cases as string[]) ?? [];
           setTriageResolvedCases(cases);
+          const sources = evt.sources as
+            | { bot?: number; glean?: number; merged?: number }
+            | undefined;
+          if (sources) {
+            setTriageDiscovery((prev) => ({
+              bot: sources.bot ?? prev?.bot ?? 0,
+              glean: sources.glean ?? prev?.glean ?? 0,
+              merged: sources.merged ?? cases.length,
+              botReason: prev?.botReason ?? null,
+            }));
+          }
           if (cases.length === 0) {
-            fatalError = "No case numbers found in Glean artifacts";
+            fatalError = "No case numbers found";
+          } else {
+            // Pre-populate triageLog with every expected job so the user
+            // sees the full task list immediately (all 2N + account-health
+            // batches). Without this, only ~concurrency entries appear at
+            // a time and the dial's denominator diverges from visible
+            // tiles. Batch sizing mirrors auto-triage-pipeline.ts:
+            //   BATCH_THRESHOLD = 10, MAX_CASES_PER_HEALTH_BATCH = 7.
+            const TRIAGE_BATCH_THRESHOLD = 10;
+            const TRIAGE_MAX_CASES_PER_HEALTH_BATCH = 7;
+            const seeded: TriageLogEntry[] = [];
+            for (const c of cases) {
+              seeded.push({
+                key: keyOf("case-summary", c),
+                label: labelOf("case-summary", c),
+                status: "pending",
+              });
+              seeded.push({
+                key: keyOf("precedent-research", c),
+                label: labelOf("precedent-research", c),
+                status: "pending",
+              });
+            }
+            const batchCount =
+              cases.length <= TRIAGE_BATCH_THRESHOLD
+                ? 1
+                : Math.ceil(cases.length / TRIAGE_MAX_CASES_PER_HEALTH_BATCH);
+            for (let i = 0; i < batchCount; i++) {
+              const batchLabel =
+                batchCount === 1 ? "all" : `batch ${i + 1}/${batchCount}`;
+              seeded.push({
+                key: keyOf("account-support-health", undefined, batchLabel),
+                label: labelOf(
+                  "account-support-health",
+                  undefined,
+                  batchLabel,
+                ),
+                status: "pending",
+              });
+            }
+            setTriageLog(seeded);
           }
         } else if (evt.type === "cache_scan") {
           const counts = evt.cacheCounts as TriageCacheCounts | undefined;
@@ -970,19 +1059,18 @@ export function Wizard() {
           setGenerating(false);
           return;
         }
-        // 2. DB cache (< 30 days)
+        // 2. DB cache — existing reports are always reused. Regeneration
+        // happens only on explicit user action (Regenerate / forceRefresh).
         const cached = await dbLoad(input.accountName, input.salesforceId);
         if (cached?.report) {
           const updatedAt = (cached as unknown as Record<string, unknown>).updatedAt as string | undefined;
-          if (updatedAt && Date.now() - new Date(updatedAt).getTime() < CACHE_TTL_MS) {
-            setReport(cached.report);
-            setReportFromCache(true);
-            setReportGeneratedAt(updatedAt);
-            track({ event: "report_viewed_cached", account: input.accountName, salesforceId: input.salesforceId });
-            router.push(reportUrl(input));
-            setGenerating(false);
-            return;
-          }
+          setReport(cached.report);
+          setReportFromCache(true);
+          if (updatedAt) setReportGeneratedAt(updatedAt);
+          track({ event: "report_viewed_cached", account: input.accountName, salesforceId: input.salesforceId });
+          router.push(reportUrl(input));
+          setGenerating(false);
+          return;
         }
       }
 
@@ -1017,10 +1105,44 @@ export function Wizard() {
           ? settings.anthropicModel
           : settings.mongogptModel;
 
-    // Kick off timer-driven progress stages
-    const timers = GEN_STAGES.map(({ pct, label, ms }) =>
-      setTimeout(() => setGenProgress({ pct, label }), ms),
-    );
+    // Fetch prior report (latest append-only version) + the reviewer-set
+    // statuses on its risks, so the synthesis can tag recurrence / regression.
+    let priorReport: { report: string; generatedAt: string; riskStatuses: Array<{ riskId: number; status: string; owner?: string | null; dueDate?: string | null }> } | null = null;
+    if (input.salesforceId) {
+      try {
+        const [priorRes, statusRes] = await Promise.all([
+          fetch(`/api/db/report-versions?salesforceId=${encodeURIComponent(input.salesforceId)}&latest=true`),
+          fetch(`/api/db/risks?salesforceId=${encodeURIComponent(input.salesforceId)}`),
+        ]);
+        const priorJson = await priorRes.json();
+        const statusJson = await statusRes.json();
+        if (priorJson.ok && priorJson.version?.report) {
+          priorReport = {
+            report: priorJson.version.report as string,
+            generatedAt: priorJson.version.generatedAt as string,
+            riskStatuses: statusJson.ok ? (statusJson.risks ?? []) : [],
+          };
+        }
+      } catch {
+        // Non-fatal: prior context is a best-effort enhancement.
+      }
+    }
+
+    // Floor-driven progress: each streamed delta nudges the dial forward.
+    // Early chars are cheap (preamble, headings), later chars are richer
+    // (risk detail, recommendations). We use a simple heuristic that caps
+    // at 95% until the `done` event lands. The GEN_STAGES timers still fire
+    // as a fallback label source, but the real progress comes from stream
+    // bytes.
+    let observedChars = 0;
+    const approxFinalChars = 12_000; // typical Risk Register size; ceiling, not a hard limit
+    const charsToPct = (c: number) =>
+      Math.min(95, Math.round((c / approxFinalChars) * 95));
+    const stageLabelFor = (pct: number): string => {
+      const stage = [...GEN_STAGES].reverse().find((s) => pct >= s.pct);
+      return stage?.label ?? "Drafting…";
+    };
+    setGenProgress({ pct: 5, label: "Preparing artifacts for LLM" });
 
     try {
       const res = await fetch("/api/generate", {
@@ -1033,30 +1155,101 @@ export function Wizard() {
           apiKey,
           model,
           mongogptUrl: provider === "mongogpt" ? settings.mongogptUrl || undefined : undefined,
+          priorReport,
         }),
       });
-      timers.forEach(clearTimeout);
-      const json = await res.json();
-      if (json.ok) {
-        setGenProgress({ pct: 100, label: "Report ready!" });
-        const now = new Date().toISOString();
-        setReport(json.report);
-        setReportGeneratedAt(now);
-        setArtifactsFreshlyGathered(false);
-        track({
-          event: "report_generated",
-          account: input.accountName,
-          salesforceId: input.salesforceId,
-          metadata: { provider, model, artifactCount: artifacts.length, generatedAt: now },
-        });
-        await dbSave({ input, artifacts, report: json.report });
-        router.push(reportUrl(input));
-      } else {
+
+      // Non-2xx (validation errors return plain JSON before the stream).
+      if (!res.ok && !res.headers.get("content-type")?.includes("x-ndjson")) {
+        const errJson = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         setGenProgress(null);
-        setGenError(json.error || "Generation failed.");
+        setGenError(errJson.error || "Generation failed.");
+        return;
       }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setGenProgress(null);
+        setGenError("Generation stream produced no body.");
+        return;
+      }
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalReport: string | null = null;
+      let streamError: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl = buffer.indexOf("\n");
+        while (nl !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (line) {
+            try {
+              const evt = JSON.parse(line) as {
+                type: string;
+                text?: string;
+                report?: string;
+                error?: string;
+              };
+              if (evt.type === "delta" && typeof evt.text === "string") {
+                observedChars += evt.text.length;
+                const pct = charsToPct(observedChars);
+                setGenProgress({ pct, label: stageLabelFor(pct) });
+              } else if (evt.type === "done" && typeof evt.report === "string") {
+                finalReport = evt.report;
+              } else if (evt.type === "error") {
+                streamError = evt.error ?? "Generation failed.";
+              }
+            } catch {
+              // Ignore malformed lines — the stream may contain stray whitespace.
+            }
+          }
+          nl = buffer.indexOf("\n");
+        }
+      }
+
+      if (streamError) {
+        setGenProgress(null);
+        setGenError(streamError);
+        return;
+      }
+      if (!finalReport) {
+        setGenProgress(null);
+        setGenError("Generation stream ended without a final report.");
+        return;
+      }
+
+      setGenProgress({ pct: 100, label: "Report ready!" });
+      const now = new Date().toISOString();
+      setReport(finalReport);
+      setReportGeneratedAt(now);
+      setArtifactsFreshlyGathered(false);
+      track({
+        event: "report_generated",
+        account: input.accountName,
+        salesforceId: input.salesforceId,
+        metadata: { provider, model, artifactCount: artifacts.length, generatedAt: now },
+      });
+      await dbSave({ input, artifacts, report: finalReport });
+      if (input.salesforceId) {
+        fetch("/api/db/report-versions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            salesforceId: input.salesforceId,
+            input,
+            report: finalReport,
+            riskStatuses: priorReport?.riskStatuses ?? [],
+          }),
+        }).catch(() => {
+          /* non-fatal — the primary `assessments` doc is already saved */
+        });
+      }
+      router.push(reportUrl(input));
     } catch (err) {
-      timers.forEach(clearTimeout);
       setGenProgress(null);
       throw err;
     }
@@ -1160,6 +1353,22 @@ export function Wizard() {
       alert((err as Error).message);
     } finally {
       setPdfExporting(false);
+    }
+  }
+
+  async function handleDownloadDocx() {
+    setDocxExporting(true);
+    try {
+      await exportDocx({
+        markdown: report,
+        accountName: input.canonicalName || input.accountName,
+        timeframeMonths: input.timeframeMonths,
+        motivation: input.motivation,
+      });
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setDocxExporting(false);
     }
   }
 
@@ -1366,14 +1575,11 @@ export function Wizard() {
                       const existing = await dbLoad(input.accountName, input.salesforceId);
                       setCheckingReport(false);
                       if (existing?.report) {
-                        const updatedAt = (existing as unknown as Record<string, unknown>).updatedAt as string | undefined;
-                        const age = updatedAt ? Date.now() - new Date(updatedAt).getTime() : Infinity;
-                        if (age < 30 * 24 * 60 * 60 * 1000) {
-                          // Fresh report — use the record's own account name for the URL
-                          const recInput = (existing as unknown as { input?: AssessmentInput }).input ?? input;
-                          router.push(reportUrl({ ...recInput, salesforceId: recInput.salesforceId ?? input.salesforceId, canonicalName: recInput.canonicalName ?? input.canonicalName }));
-                          return;
-                        }
+                        // Existing reports are always reused — regeneration only
+                        // happens when the user explicitly clicks Regenerate.
+                        const recInput = (existing as unknown as { input?: AssessmentInput }).input ?? input;
+                        router.push(reportUrl({ ...recInput, salesforceId: recInput.salesforceId ?? input.salesforceId, canonicalName: recInput.canonicalName ?? input.canonicalName }));
+                        return;
                       }
                       setStepIdx(1);
                     }}
@@ -1409,13 +1615,52 @@ export function Wizard() {
             />
 
             <div className="space-y-5">
-              {/* ── Circular progress (while gathering) ── */}
+              {/* ── Circular progress (while gathering + triage) ── */}
               {gathering && (() => {
-                const total   = gleanChatPrompts.length + gleanQueries.length;
-                const done    = gatherLog.filter((l) => l.status !== "pending").length;
-                const pct     = total > 0 ? Math.round((done / total) * 100) : 0;
-                const current = gatherLog.findLast?.((l) => l.status === "pending")
-                  ?? gatherLog[gatherLog.length - 1];
+                // Weighted-phase progress: Glean = 40% of dial, Triage = 60%.
+                // Using a weighted formula keeps the dial monotonically
+                // increasing across the phase transition — otherwise the
+                // denominator (gatherTotal → gatherTotal + triageTotal) jumps
+                // the moment Triage starts, and the dial drops backward.
+                const GATHER_WEIGHT = 0.4;
+                const TRIAGE_WEIGHT = 0.6;
+
+                // Phase 1 — Glean gather tasks.
+                const gatherTotal = gleanChatPrompts.length + gleanQueries.length;
+                const gatherDone  = gatherLog.filter((l) => l.status !== "pending").length;
+                const gatherPct   = gatherTotal > 0 ? gatherDone / gatherTotal : 0;
+
+                // Phase 2 — Auto Triage. Expected prompt count once cases
+                // resolve: 2 per case (summary + precedents) + account-health
+                // batches (1 for <=10, ceil(N/7) otherwise). Matches
+                // auto-triage-pipeline.ts constants.
+                const N = triageResolvedCases.length;
+                const triageTotal = N > 0
+                  ? 2 * N + (N <= 10 ? 1 : Math.ceil(N / 7))
+                  : 0;
+                const triageDone = triageLog.filter(
+                  (l) => l.status === "ok" || l.status === "error",
+                ).length;
+                const triageSkipped = !!triageSkipReason;
+                const triagePct = triageSkipped
+                  ? 1
+                  : triageTotal > 0
+                    ? triageDone / triageTotal
+                    : 0;
+
+                const pct = Math.round(
+                  (GATHER_WEIGHT * gatherPct + TRIAGE_WEIGHT * triagePct) * 100,
+                );
+
+                const currentGather = gatherLog.findLast?.((l) => l.status === "pending");
+                const currentTriage = triageLog.findLast?.(
+                  (l) => l.status === "pending" || l.status === "running",
+                );
+                const current = currentTriage
+                  ? { label: currentTriage.label }
+                  : currentGather
+                    ? { label: currentGather.label }
+                    : gatherLog[gatherLog.length - 1];
                 const r = 36;
                 const circ = 2 * Math.PI * r;
                 const dash = circ - (pct / 100) * circ;
@@ -1444,13 +1689,13 @@ export function Wizard() {
                       </div>
                     </div>
 
-                    {/* Source tiles */}
+                    {/* Source tiles — Glean gather + Auto Triage in one grid */}
                     <div className="w-full">
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                         {gatherLog.map((l, i) => {
                           const status = l.status === "ok" ? "ok" : l.status === "error" ? "error" : "pending";
                           return (
-                            <div key={i} className={`border border-ink-700 bg-accent-900 px-3 py-2 ${l.status === "pending" ? "animate-pulse" : ""}`} style={{ borderRadius: "8px" }}>
+                            <div key={`g-${i}`} className={`border border-ink-700 bg-accent-900 px-3 py-2 ${l.status === "pending" ? "animate-pulse" : ""}`} style={{ borderRadius: "8px" }}>
                               <div className="flex items-center gap-2 text-[13px] text-ink-200">
                                 <StatusDot status={status} />
                                 <span className="truncate">{cleanLabel(l.label)}</span>
@@ -1459,6 +1704,27 @@ export function Wizard() {
                                 {l.status === "ok" && l.detail === "cached" ? "Cached artifact" :
                                  l.status === "ok" ? "Completed" :
                                  l.status === "error" ? "Failed to fetch" : "In progress"}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {triageLog.map((l) => {
+                          const status = l.status === "ok"
+                            ? "ok"
+                            : l.status === "error"
+                              ? "error"
+                              : "pending";
+                          return (
+                            <div key={`t-${l.key}`} className={`border border-ink-700 bg-accent-900 px-3 py-2 ${(l.status === "pending" || l.status === "running") ? "animate-pulse" : ""}`} style={{ borderRadius: "8px" }}>
+                              <div className="flex items-center gap-2 text-[13px] text-ink-200">
+                                <StatusDot status={status} />
+                                <span className="truncate">{l.label}</span>
+                              </div>
+                              <div className="mt-1 text-[11px] text-ink-400">
+                                {l.status === "ok" && l.source === "cached" ? "Cached" :
+                                 l.status === "ok" ? "Completed" :
+                                 l.status === "error" ? (l.detail || "Failed") :
+                                 l.status === "running" ? "Calling Auto Triage…" : "Queued"}
                               </div>
                             </div>
                           );
@@ -1575,57 +1841,64 @@ export function Wizard() {
                   )}
                 </div>
 
-                {triageCacheCounts && (triageCacheCounts.hit > 0 || triageCacheCounts.miss > 0 || triageCacheCounts.staleRefresh > 0) && (
+                {triageDiscovery && (
                   <div className="grid grid-cols-3 gap-2">
                     <div className="border border-ink-700 bg-accent-900 px-3 py-3" style={{ borderRadius: "8px" }}>
-                      <div className="text-[22px] font-semibold tabular-nums text-accent-400">{triageCacheCounts.hit}</div>
-                      <div className="mt-1 text-[11px] text-ink-400">from cache</div>
+                      <div className="text-[22px] font-semibold tabular-nums text-accent-400">
+                        {triageDiscovery.bot}
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-400">
+                        from Auto Triage bot
+                        {triageDiscovery.botReason ? (
+                          <span className="block text-warn mt-0.5" title={triageDiscovery.botReason}>
+                            bot reason: {triageDiscovery.botReason.slice(0, 60)}
+                            {triageDiscovery.botReason.length > 60 ? "…" : ""}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="border border-ink-700 bg-accent-900 px-3 py-3" style={{ borderRadius: "8px" }}>
-                      <div className="text-[22px] font-semibold tabular-nums text-ink-200">{triageCacheCounts.miss}</div>
-                      <div className="mt-1 text-[11px] text-ink-400">fetched fresh</div>
+                      <div className="text-[22px] font-semibold tabular-nums text-accent-400">
+                        {triageDiscovery.glean}
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-400">from Glean servicecloud</div>
                     </div>
                     <div className="border border-ink-700 bg-accent-900 px-3 py-3" style={{ borderRadius: "8px" }}>
-                      <div className="text-[22px] font-semibold tabular-nums text-warn">{triageCacheCounts.staleRefresh}</div>
-                      <div className="mt-1 text-[11px] text-ink-400">refreshed (open &gt;7d)</div>
+                      <div className="text-[22px] font-semibold tabular-nums text-ink-100">
+                        {triageDiscovery.merged || triageResolvedCases.length}
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-400">unique cases analyzed</div>
                     </div>
                   </div>
                 )}
 
-                {triageLog.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {triageLog.map((l) => {
-                      const status = l.status === "ok" ? "ok" : l.status === "error" ? "error" : "pending";
-                      const sub =
-                        l.status === "error"
-                          ? (l.detail?.slice(0, 80) ?? "Failed")
-                          : l.status === "running"
-                            ? l.source === "cached" ? "Loading from cache…" : "Calling Auto Triage…"
-                            : l.status === "ok"
-                              ? [
-                                  l.source === "cached" ? "From cache" : l.durationMs ? `Fresh · ${Math.round(l.durationMs / 1000)}s` : "Fresh",
-                                  l.caseStatus === "closed" ? "closed" : l.caseStatus === "open" ? "open" : null,
-                                ].filter(Boolean).join(" · ")
-                              : "Queued";
-                      return (
-                        <div
-                          key={l.key}
-                          className={`border border-ink-700 bg-accent-900 px-3 py-2 ${l.status === "running" && l.source !== "cached" ? "animate-pulse" : ""}`}
-                          style={{ borderRadius: "8px" }}
-                        >
-                          <div className="flex items-center gap-2 text-[13px] text-ink-200">
-                            <StatusDot status={status} />
-                            <span className="truncate">{l.label}</span>
-                            {l.source === "cached" && l.status === "ok" && (
-                              <span className="ml-auto text-[10px] px-1.5 py-0.5 bg-accent-700 text-accent-300 rounded">cached</span>
-                            )}
-                          </div>
-                          <div className="mt-1 text-[11px] text-ink-400">{sub}</div>
-                        </div>
-                      );
-                    })}
+                {triageCacheCounts && (triageCacheCounts.hit > 0 || triageCacheCounts.miss > 0) && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="border border-ink-700 bg-accent-900 px-3 py-3" style={{ borderRadius: "8px" }}>
+                      <div className="text-[22px] font-semibold tabular-nums text-accent-400">
+                        {triageCacheCounts.hit}
+                        <span className="text-[13px] text-ink-500 font-normal ml-1">prompts</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-400">
+                        reused from cache ({Math.round(triageCacheCounts.hit / 2)} case{Math.round(triageCacheCounts.hit / 2) === 1 ? "" : "s"})
+                      </div>
+                    </div>
+                    <div className="border border-ink-700 bg-accent-900 px-3 py-3" style={{ borderRadius: "8px" }}>
+                      <div className="text-[22px] font-semibold tabular-nums text-ink-200">
+                        {triageCacheCounts.miss}
+                        <span className="text-[13px] text-ink-500 font-normal ml-1">prompts</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-400">
+                        fetched fresh from bot ({Math.round(triageCacheCounts.miss / 2)} new case{Math.round(triageCacheCounts.miss / 2) === 1 ? "" : "s"})
+                      </div>
+                    </div>
                   </div>
                 )}
+
+                {/* Per-case tile grid intentionally omitted post-run — the
+                 *  KPI row above is the signal; per-tile durations are debug
+                 *  noise once everything is complete. During active gathering
+                 *  the unified circular-loader grid shows progress. */}
 
                 {triageSkipReason && !triageRunning && (
                   <div className="text-[12px] text-warn border-l-2 border-warn pl-3">
@@ -1656,7 +1929,7 @@ export function Wizard() {
               description={
                 settings.llmProvider === "mongogpt" && artifacts.length === 0
                   ? "No Step 2 artifacts found — MongoGPT will run an agentic tool-calling loop to gather evidence from Glean before drafting the report."
-                  : `The LLM synthesizes the Risk Register from ${artifacts.length} pre-gathered artifact${artifacts.length === 1 ? "" : "s"}. No additional Glean calls needed.`
+                  : `The LLM synthesizes the Risk Register from ${countActualArtifacts(artifacts)} pre-gathered evidence piece${countActualArtifacts(artifacts) === 1 ? "" : "s"}. No additional Glean calls needed.`
               }
             />
 
@@ -1682,7 +1955,7 @@ export function Wizard() {
                 label="Timeframe"
                 value={`last ${input.timeframeMonths} months`}
               />
-              <Stat label="Artifacts" value={String(artifacts.length)} />
+              <Stat label="Artifacts" value={String(countActualArtifacts(artifacts))} />
             </div>
 
             {genError && (
@@ -1691,20 +1964,37 @@ export function Wizard() {
               </div>
             )}
 
-            {/* Progress bar — visible during any one-shot LLM generation (initial or force) */}
-            {generating && genProgress && !(settings.llmProvider === "mongogpt" && artifacts.length === 0) && (
-              <div className="mb-6 space-y-2">
-                <div className="flex justify-end text-xs tabular-nums text-ink-400">
-                  {genProgress.pct}%
+            {/* Circular progress — visible during one-shot LLM generation. */}
+            {generating && genProgress && !(settings.llmProvider === "mongogpt" && artifacts.length === 0) && (() => {
+              const r = 36;
+              const circ = 2 * Math.PI * r;
+              const dash = circ - (genProgress.pct / 100) * circ;
+              return (
+                <div className="mb-6 flex flex-col items-center gap-4 py-8">
+                  <div className="relative h-[120px] w-[120px]">
+                    <svg className="h-[120px] w-[120px] -rotate-90" viewBox="0 0 88 88">
+                      <circle cx="44" cy="44" r={r} fill="none" stroke="#1E2D3D" strokeWidth="6" />
+                      <circle
+                        cx="44" cy="44" r={r}
+                        fill="none"
+                        stroke="#3B82F6"
+                        strokeWidth="6"
+                        strokeLinecap="round"
+                        strokeDasharray={circ}
+                        strokeDashoffset={dash}
+                        style={{ transition: "stroke-dashoffset 0.7s ease-out", filter: "drop-shadow(0 0 12px rgba(59,130,246,0.3))" }}
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="font-semibold tabular-nums text-ink-100 text-[24px]">
+                        {genProgress.pct}<span className="text-[13px] text-ink-400">%</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-[13px] text-ink-400">{genProgress.label}</div>
                 </div>
-                <div className="h-1.5 w-full overflow-hidden bg-ink-700" style={{ borderRadius: "9999px" }}>
-                  <div
-                    className="bg-accent-500 h-1.5 transition-all duration-700 ease-out"
-                    style={{ width: `${genProgress.pct}%`, borderRadius: "9999px" }}
-                  />
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {(generating || agentEvents.length > 0) &&
               settings.llmProvider === "mongogpt" &&
@@ -1734,12 +2024,12 @@ export function Wizard() {
             <StepHeading
               eyebrow="Step 4"
               title="Review & Export"
-              description="Review the draft, copy or download as markdown, and take it to high-context reviewers for LGTM before delivery."
+              description="Review the draft, copy or download as markdown, and share it with the account team before delivery."
               right={
                 <div className="flex items-center gap-2">
                   <CopyButton text={report} />
                   {input.accountName && (
-                    <Link href={`/reports/${encodeURIComponent(input.canonicalName || input.accountName)}`}>
+                    <Link href={reportUrl(input)}>
                       <Button variant="secondary" size="sm">
                         View report page →
                       </Button>
@@ -1770,6 +2060,14 @@ export function Wizard() {
                   <Button
                     variant="secondary"
                     size="sm"
+                    loading={docxExporting}
+                    onClick={() => handleDownloadDocx()}
+                  >
+                    Download .docx
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     loading={pdfExporting}
                     onClick={() => handleDownloadPdf()}
                   >
@@ -1785,7 +2083,7 @@ export function Wizard() {
               <>
                 {reportFromCache && (
                   <div className="mb-4 border border-success/35 bg-success/10 px-4 py-3 text-sm text-success" style={{ borderRadius: "8px" }}>
-                    Report loaded from cache (generated within the last 30 days). Use &ldquo;Regenerate&rdquo; to call GPT fresh.
+                    Report loaded from cache. Use &ldquo;Regenerate&rdquo; to call GPT fresh.
                   </div>
                 )}
                 <div className="grid lg:grid-cols-2 gap-6">

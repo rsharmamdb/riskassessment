@@ -120,7 +120,6 @@ export function inferStatusFromMarkdown(md: string): CaseStatus {
 // --------------------------- MongoDB adapter -----------------------------
 
 const COLLECTION = "case_intelligence";
-const TTL_SECONDS = 365 * 24 * 60 * 60; // 1 year
 
 let _indexesEnsured = false;
 
@@ -129,10 +128,9 @@ async function ensureIndexes(
 ): Promise<void> {
   if (_indexesEnsured) return;
   try {
-    await col.createIndex(
-      { lastWriteAt: 1 },
-      { expireAfterSeconds: TTL_SECONDS, name: "ttl_lastWriteAt" },
-    );
+    // No TTL: we retain case intelligence indefinitely for historical
+    // analysis and recommendation tracking. Older entries are still
+    // refreshed on-demand via `forceRefresh` or an open-case > 7d window.
     await col.createIndex(
       { salesforceId: 1, caseNumber: 1 },
       { name: "sfId_case" },
@@ -140,7 +138,7 @@ async function ensureIndexes(
     _indexesEnsured = true;
   } catch (err) {
     // Index creation is best-effort — a permission failure shouldn't kill
-    // the pipeline. Cache just won't auto-evict.
+    // the pipeline.
     console.warn("[case-intel-cache] ensureIndexes failed:", (err as Error).message);
   }
 }

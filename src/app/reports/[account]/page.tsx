@@ -1,12 +1,14 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button, Card, CardBody, CardHeader } from "@/components/ui";
 import { track } from "@/lib/track";
 import { exportPdf } from "@/lib/pdf-export";
+import { exportMarkdown, exportDocx } from "@/lib/export-client";
+import { parseRiskRating, ratingChipClasses } from "@/lib/parse-risk-rating";
 import {
   parseRisks,
   SEVERITY_WEIGHT,
@@ -21,26 +23,7 @@ import {
 } from "@/lib/parse-risks";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface LgtmRole {
-  approved: boolean;
-  reviewerName?: string | null;
-  updatedAt?: string;
-}
-interface LgtmDoc {
-  account: string;
-  roles?: { AE?: LgtmRole; CSM?: LgtmRole; PS?: LgtmRole };
-  updatedAt?: string;
-}
 interface RiskStatusDoc { riskId: number; status: RiskStatus; owner?: string; dueDate?: string }
-
-const ROLES = ["AE", "CSM", "PS"] as const;
-type Role = (typeof ROLES)[number];
-
-const ROLE_LABELS: Record<Role, string> = {
-  AE: "Account Executive",
-  CSM: "Customer Success Manager",
-  PS: "Professional Services",
-};
 
 const SEVERITY_ORDER: Severity[] = ["Critical", "Significant", "Roadmap Planning"];
 const CONFIDENCE_ORDER: Confidence[] = ["High", "Medium", "Low"];
@@ -233,26 +216,20 @@ function RiskRow({
 export default function ReportPage() {
   const params = useParams();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const accountSlug = decodeURIComponent(String(params.account ?? ""));
-  // sfId passed as ?sfId= from Wizard — use it for direct, name-independent lookup
-  const sfIdParam = searchParams.get("sfId") ?? undefined;
+  // URL segment is the Salesforce ID (guaranteed by the wizard's Step 1 gate).
+  const sfId = decodeURIComponent(String(params.account ?? ""));
 
   const [showRefreshDialog, setShowRefreshDialog] = useState(false);
   const [report, setReport] = useState<string | null>(null);
   const [reportDate, setReportDate] = useState<string | null>(null);
-  const [artifactsUpdatedAt, setArtifactsUpdatedAt] = useState<string | null>(null);
-  const [lgtm, setLgtm] = useState<LgtmDoc | null>(null);
   const [risks, setRisks] = useState<ParsedRisk[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [approving, setApproving] = useState<Role | null>(null);
-  const [reviewerName, setReviewerName] = useState("");
   const [highlightedRisk, setHighlightedRisk] = useState<number | null>(null);
   const [execMode, setExecMode] = useState(false);
   const [pdfExporting, setPdfExporting] = useState(false);
+  const [docxExporting, setDocxExporting] = useState(false);
   const [assessmentMeta, setAssessmentMeta] = useState<{ timeframeMonths?: number; motivation?: string }>({});
-  const [salesforceId, setSalesforceId] = useState<string | null>(null);
   const [canonicalName, setCanonicalName] = useState<string | null>(null);
 
   // Email draft
@@ -261,72 +238,74 @@ export default function ReportPage() {
   const [showEmail, setShowEmail] = useState(false);
 
   useEffect(() => {
-    if (!accountSlug) return;
-    // Prefer sfId lookup (stable across name changes); fall back to account name slug
-    const assessParam = sfIdParam
-      ? `salesforceId=${encodeURIComponent(sfIdParam)}`
-      : `account=${encodeURIComponent(accountSlug)}`;
-    Promise.all([
-      fetch(`/api/db/assessments?${assessParam}`).then((r) => r.json()),
-      fetch(`/api/db/lgtm?account=${encodeURIComponent(accountSlug)}`).then((r) => r.json()),
-      fetch(`/api/db/risks?account=${encodeURIComponent(accountSlug)}`).then((r) => r.json()),
-    ])
-      .then(([assessJson, lgtmJson, risksJson]) => {
-        if (assessJson.ok && assessJson.assessment?.report) {
-          const md = assessJson.assessment.report as string;
-          setReport(md);
-          setReportDate((assessJson.assessment as Record<string, unknown>).updatedAt as string ?? null);
-          setAssessmentMeta({
-            timeframeMonths: assessJson.assessment?.input?.timeframeMonths as number | undefined,
-            motivation: assessJson.assessment?.input?.motivation as string | undefined,
-          });
-          const sfId = assessJson.assessment?.input?.salesforceId as string | undefined;
-          if (sfId) setSalesforceId(sfId);
-          const cName = assessJson.assessment?.input?.canonicalName as string | undefined;
-          if (cName) setCanonicalName(cName);
+    if (!sfId) return;
 
-          // Detect newest artifact fetch time for stale check
-          const arts = ((assessJson.assessment as Record<string, unknown>).artifacts ?? []) as Array<{ fetchedAt?: string }>;
-          const newest = arts.reduce((max, a) => {
-            const t = a.fetchedAt ? new Date(a.fetchedAt).getTime() : 0;
-            return t > max ? t : max;
-          }, 0);
-          if (newest) setArtifactsUpdatedAt(new Date(newest).toISOString());
-
-          // Parse risks + merge saved statuses
-          const parsed = parseRisks(md);
-          const statusMap: Record<number, RiskStatusDoc> = {};
-          for (const r of (risksJson.risks ?? []) as RiskStatusDoc[]) statusMap[r.riskId] = r;
-          setRisks(parsed.map((r) => ({
-            ...r,
-            status: statusMap[r.id]?.status ?? "Open",
-            owner: statusMap[r.id]?.owner,
-            dueDate: statusMap[r.id]?.dueDate,
-          })));
-
-          track({
-            event: "report_page_viewed",
-            account: accountSlug,
-            salesforceId: assessJson.assessment?.input?.salesforceId as string | undefined,
-          });
-        } else {
-          setError("No report found for this account.");
+    let cancelled = false;
+    (async () => {
+      try {
+        const assessJson = await fetch(
+          `/api/db/assessments?salesforceId=${encodeURIComponent(sfId)}`,
+        ).then((r) => r.json());
+        if (cancelled) return;
+        if (!assessJson.ok || !assessJson.assessment?.report) {
+          setError("No report found for this Salesforce ID.");
+          return;
         }
-        if (lgtmJson.ok) setLgtm(lgtmJson.lgtm);
-      })
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setLoading(false));
-  }, [accountSlug, sfIdParam]);
+        const md = assessJson.assessment.report as string;
+        setReport(md);
+        setReportDate((assessJson.assessment as Record<string, unknown>).updatedAt as string ?? null);
+        setAssessmentMeta({
+          timeframeMonths: assessJson.assessment?.input?.timeframeMonths as number | undefined,
+          motivation: assessJson.assessment?.input?.motivation as string | undefined,
+        });
+        const cName = assessJson.assessment?.input?.canonicalName as string | undefined;
+        const aName = assessJson.assessment?.input?.accountName as string | undefined;
+        setCanonicalName(cName || aName || null);
+
+        const risksJson = await fetch(
+          `/api/db/risks?salesforceId=${encodeURIComponent(sfId)}`,
+        ).then((r) => r.json());
+        if (cancelled) return;
+
+        const parsed = parseRisks(md);
+        const statusMap: Record<number, RiskStatusDoc> = {};
+        for (const r of (risksJson.risks ?? []) as RiskStatusDoc[]) statusMap[r.riskId] = r;
+        setRisks(parsed.map((r) => ({
+          ...r,
+          status: statusMap[r.id]?.status ?? "Open",
+          owner: statusMap[r.id]?.owner,
+          dueDate: statusMap[r.id]?.dueDate,
+        })));
+
+        track({
+          event: "report_page_viewed",
+          account: cName || aName || sfId,
+          salesforceId: sfId,
+        });
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [sfId]);
 
   const handleStatusChange = useCallback(async (riskId: number, status: RiskStatus) => {
     setRisks((prev) => prev.map((r) => r.id === riskId ? { ...r, status } : r));
     await fetch("/api/db/risks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ account: accountSlug, riskId, status }),
+      body: JSON.stringify({ salesforceId: sfId, riskId, status }),
     });
-    track({ event: "risk_status_changed", account: accountSlug, metadata: { riskId, status } });
-  }, [accountSlug]);
+    track({
+      event: "risk_status_changed",
+      account: canonicalName || sfId,
+      salesforceId: sfId,
+      metadata: { riskId, status },
+    });
+  }, [sfId, canonicalName]);
 
   const handleMatrixSelect = (id: number) => {
     setHighlightedRisk(id);
@@ -336,37 +315,6 @@ export default function ReportPage() {
     setTimeout(() => setHighlightedRisk(null), 3000);
   };
 
-  async function handleApprove(role: Role) {
-    setApproving(role);
-    try {
-      await fetch("/api/db/lgtm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account: accountSlug, role, reviewerName: reviewerName || null, approved: true }),
-      });
-      const j = await fetch(`/api/db/lgtm?account=${encodeURIComponent(accountSlug)}`).then((r) => r.json());
-      if (j.ok) setLgtm(j.lgtm);
-      track({ event: "lgtm_approved", account: accountSlug, metadata: { role } });
-    } finally {
-      setApproving(null);
-    }
-  }
-
-  async function handleRevoke(role: Role) {
-    setApproving(role);
-    try {
-      await fetch("/api/db/lgtm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account: accountSlug, role, approved: false }),
-      });
-      const j = await fetch(`/api/db/lgtm?account=${encodeURIComponent(accountSlug)}`).then((r) => r.json());
-      if (j.ok) setLgtm(j.lgtm);
-    } finally {
-      setApproving(null);
-    }
-  }
-
   async function handleDraftEmail() {
     setDraftingEmail(true);
     setShowEmail(true);
@@ -374,7 +322,7 @@ export default function ReportPage() {
       const res = await fetch("/api/email-draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountName: accountSlug, risks }),
+        body: JSON.stringify({ accountName: canonicalName || sfId, risks }),
       });
       const j = await res.json();
       setEmailDraft(j.ok ? j.draft : `Error: ${j.error}`);
@@ -389,7 +337,7 @@ export default function ReportPage() {
     try {
       await exportPdf({
         markdown: report,
-        accountName: accountSlug,
+        accountName: canonicalName || sfId,
         timeframeMonths: assessmentMeta.timeframeMonths,
         motivation: assessmentMeta.motivation,
       });
@@ -397,6 +345,28 @@ export default function ReportPage() {
       window.alert((err as Error).message);
     } finally {
       setPdfExporting(false);
+    }
+  }
+
+  function handleDownloadMarkdown() {
+    if (!report) return;
+    exportMarkdown({ markdown: report, accountName: canonicalName || sfId });
+  }
+
+  async function handleDownloadDocx() {
+    if (!report) return;
+    setDocxExporting(true);
+    try {
+      await exportDocx({
+        markdown: report,
+        accountName: canonicalName || sfId,
+        timeframeMonths: assessmentMeta.timeframeMonths,
+        motivation: assessmentMeta.motivation,
+      });
+    } catch (err) {
+      window.alert((err as Error).message);
+    } finally {
+      setDocxExporting(false);
     }
   }
 
@@ -412,11 +382,9 @@ export default function ReportPage() {
     );
   }
 
-  const allApproved = ROLES.every((r) => lgtm?.roles?.[r]?.approved);
-  const isStale = artifactsUpdatedAt
-    ? Date.now() - new Date(artifactsUpdatedAt).getTime() > 30 * 24 * 60 * 60 * 1000
-    : false;
   const openCritical = risks.filter((r) => r.severity === "Critical" && r.status !== "Mitigated").length;
+  const rating = parseRiskRating(report);
+  const ratingCls = ratingChipClasses(rating);
 
   return (
     <div className="space-y-6">
@@ -424,19 +392,27 @@ export default function ReportPage() {
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
         <div>
           <div className="text-xs text-ink-400 uppercase tracking-wider mb-1">Risk Register Report</div>
-          <h1 className="text-2xl font-semibold tracking-tight capitalize">
-            {salesforceId ? (
-              <a
-                href={`https://hub.corp.mongodb.com/account/${salesforceId}/overview`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-ink-100 hover:text-accent-400 transition-colors"
-                title={`Open ${canonicalName || accountSlug} in Hub (${salesforceId})`}
+          <h1 className="text-2xl font-semibold tracking-tight capitalize flex items-center gap-3 flex-wrap">
+            <a
+              href={`https://hub.corp.mongodb.com/account/${sfId}/overview`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-ink-100 hover:text-accent-400 transition-colors"
+              title={`Open ${canonicalName || sfId} in Hub (${sfId})`}
+            >
+              {canonicalName || sfId}
+              <svg className="inline-block ml-1.5 w-4 h-4 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+            </a>
+            {rating && (
+              <span
+                className={`inline-flex items-center gap-1.5 text-[11px] font-semibold tracking-wider uppercase px-2.5 py-1 border ${ratingCls.bg} ${ratingCls.border} ${ratingCls.text}`}
+                style={{ borderRadius: "999px" }}
+                title={`Overall account risk: ${rating}`}
               >
-                {canonicalName || accountSlug}
-                <svg className="inline-block ml-1.5 w-4 h-4 text-ink-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-              </a>
-            ) : (canonicalName || accountSlug)}
+                <span className={`w-1.5 h-1.5 rounded-full ${ratingCls.dot}`} />
+                {rating} · {ratingCls.label}
+              </span>
+            )}
           </h1>
           {reportDate && (
             <div className="text-xs text-ink-500 mt-1">
@@ -445,11 +421,6 @@ export default function ReportPage() {
           )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {allApproved && (
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-mono text-success border-l-2 border-success pl-2">
-              All LGTM
-            </span>
-          )}
           {/* Internal / Exec toggle */}
           <div className="flex border border-ink-800 overflow-hidden text-xs" style={{ borderRadius: '3px' }}>
             <button
@@ -482,8 +453,8 @@ export default function ReportPage() {
             <h2 className="text-[18px] font-semibold text-ink-100">Refresh this report?</h2>
             <p className="text-[13px] text-ink-400 leading-relaxed">
               This will re-fetch all Glean data and regenerate the report from scratch,
-              replacing the current version. If the existing report is less than 30 days old,
-              you're unlikely to see significant new findings.
+              replacing the current version. The prior report is retained for historical
+              comparison.
             </p>
             <div className="flex gap-3 justify-end pt-2">
               <Button variant="ghost" size="sm" onClick={() => setShowRefreshDialog(false)}>
@@ -494,32 +465,13 @@ export default function ReportPage() {
                 size="sm"
                 onClick={() => {
                   setShowRefreshDialog(false);
-                  router.push(`/?forceRefresh=true${salesforceId ? `&sfId=${encodeURIComponent(salesforceId)}` : ""}`);
+                  router.push(`/?forceRefresh=true&sfId=${encodeURIComponent(sfId)}`);
                 }}
               >
                 Yes, refresh everything
               </Button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ── Stale data watermark ── */}
-      {isStale && (
-        <div className="flex items-start justify-between gap-4 border-l-2 border-warn pl-3 py-2 text-[12px] text-warn bg-warn/10" style={{ borderRadius: "8px" }}>
-          <div className="flex items-start gap-2">
-            <span className="mt-0.5">⚑</span>
-            <span>
-              <strong>Sources may be outdated.</strong> Artifacts last fetched{" "}
-              {artifactsUpdatedAt
-                ? new Date(artifactsUpdatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-                : "over 30 days ago"}
-              .
-            </span>
-          </div>
-          <Button variant="secondary" size="sm" onClick={() => setShowRefreshDialog(true)} className="flex-shrink-0">
-            Refresh report
-          </Button>
         </div>
       )}
 
@@ -678,75 +630,32 @@ export default function ReportPage() {
                 </button>
                 <button
                   onClick={handleDownloadPdf}
-                  className="w-full text-left text-xs text-ink-500 hover:text-ink-200 px-3 py-2 hover:bg-ink-900 transition-colors"
+                  disabled={pdfExporting || !report}
+                  className="w-full text-left text-xs text-ink-500 hover:text-ink-200 px-3 py-2 hover:bg-ink-900 transition-colors disabled:opacity-60"
                   style={{ borderRadius: '3px' }}
                 >
-                  🖨 Export PDF
+                  {pdfExporting ? "🖨 Exporting PDF…" : "🖨 Export PDF"}
+                </button>
+                <button
+                  onClick={handleDownloadDocx}
+                  disabled={docxExporting || !report}
+                  className="w-full text-left text-xs text-ink-500 hover:text-ink-200 px-3 py-2 hover:bg-ink-900 transition-colors disabled:opacity-60"
+                  style={{ borderRadius: '3px' }}
+                >
+                  {docxExporting ? "📝 Building .docx…" : "📝 Download .docx"}
+                </button>
+                <button
+                  onClick={handleDownloadMarkdown}
+                  disabled={!report}
+                  className="w-full text-left text-xs text-ink-500 hover:text-ink-200 px-3 py-2 hover:bg-ink-900 transition-colors disabled:opacity-60"
+                  style={{ borderRadius: '3px' }}
+                >
+                  📄 Download .md
                 </button>
               </div>
             </CardBody>
           </Card>
 
-          {/* LGTM panel */}
-          <Card>
-            <CardHeader title="LGTM" subtitle="Reviewer sign-off" />
-            <CardBody>
-              <div className="mb-4">
-                <label className="block text-xs text-ink-400 mb-1">Your name</label>
-                <input
-                  type="text"
-                  value={reviewerName}
-                  onChange={(e) => setReviewerName(e.target.value)}
-                  placeholder="e.g. Carol Issadore"
-                  className="w-full border border-ink-700 bg-accent-900 px-3 py-1.5 text-sm text-ink-100 placeholder:text-ink-500 focus:outline-none focus:ring-1 focus:ring-accent-500"
-                  style={{ borderRadius: '3px' }}
-                />
-              </div>
-              <div className="space-y-3">
-                {ROLES.map((role) => {
-                  const state = lgtm?.roles?.[role];
-                  const approved = state?.approved ?? false;
-                  return (
-                    <div
-                      key={role}
-                      className={`border px-3 py-3 ${
-                      approved ? "border-success/40 bg-success/10" : "border-ink-700 bg-ink-800"
-                    }`}
-                    style={{ borderRadius: '3px' }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <div className="text-xs font-medium text-ink-200">{role}</div>
-                          <div className="text-xs text-ink-500">{ROLE_LABELS[role]}</div>
-                          {approved && state?.reviewerName && (
-                            <div className="text-xs text-success mt-0.5">{state.reviewerName}</div>
-                          )}
-                        </div>
-                        {approved ? (
-                          <button
-                            onClick={() => handleRevoke(role)}
-                            disabled={approving === role}
-                            className="text-xs text-ink-500 hover:text-danger transition-colors"
-                          >
-                            {approving === role ? "…" : "Revoke"}
-                          </button>
-                        ) : (
-                          <Button size="sm" onClick={() => handleApprove(role)} loading={approving === role}>
-                            Approve
-                          </Button>
-                        )}
-                      </div>
-                      {approved && state?.updatedAt && (
-                        <div className="text-xs text-ink-600 mt-1">
-                          {new Date(state.updatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </CardBody>
-          </Card>
         </div>
       </div>
     </div>

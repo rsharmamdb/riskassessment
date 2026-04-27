@@ -3,6 +3,8 @@
  * the system prompt during report synthesis.
  */
 
+import { buildCaseSearchArgs } from "./case-analysis";
+
 /** Title-case a string: "zomato" → "Zomato", "ACME corp" → "Acme Corp" */
 export function titleCase(s: string): string {
   return s.replace(/\S+/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
@@ -43,26 +45,126 @@ Cross-reference PS report recommendations against case patterns. For each risk c
 - Frequency: High / Medium / Low
 - Impact of taking no action
 
-Categorize findings by: Connectivity, Performance, Query/Index, Upgrade, Environment/Sizing, Product, Training, Admin, Terraform/CLI/API.
+**Preserve exact evidence.** When case-intelligence artifacts carry an Evidence block (exact queries, error codes, index specs, config params, versions), reproduce those snippets exactly in the risk's evidence section. Do not paraphrase technical specifics — the whole point of the bot-side extraction is so the register can land at artifact-level detail. Do not include the word "verbatim" in the output.
+
+**Refer to the prior report as prose, not as a section.** When a prior report exists (any risk in Key Findings carries a tag other than \`NEW\`), weave references into narrative copy instead of emitting a dedicated "Prior context" block:
+- **Executive Summary** opens with a sentence like _"This report is our second review of {Account}; the previous register was delivered on {Mon DD, YYYY}."_ and closes with one sentence summarizing what changed since — e.g. _"Since the Mar 2026 review, 2 recommendations have been mitigated, 3 remain open, and 1 previously-closed risk has re-opened."_
+- **Each non-\`NEW\` risk** inside the Risk Detail narrative (not in a sub-section header) naturally references the prior report where relevant: _"This risk was first flagged as Risk #3 in the Mar 2026 report; the original recommendation to add a compound index on \`{ orderDate: -1, tenantId: 1 }\` was not implemented"_ or _"Reiterating our Mar 2026 recommendation to set \`maxPoolSize=500\`, evidence from cases 01562914 and 01547215 shows the driver still runs at the default of 50."_
+- **Regression Alerts** is the one place where prior status surfaces explicitly (reviewer marked Mitigated, risk reappeared). That callout table stays.
+- Do NOT emit a separate \`##### How this risk appeared in the previous report\` section, \`##### Prior context\` block, or any standalone "Prior Risk # / Original recommendation / Reviewer status / What has changed" scaffolding in Risk Detail. That scaffolding is direction to you, not output for the reader.
+
+**Use the taxonomy.** Every risk candidate carries a primary taxonomy id (kebab-case) drawn from the case-intelligence classifications — e.g. \`query-performance\`, \`connectivity\`, \`replication\`, \`atlas-platform\`. Group findings by taxonomy id in Appendix B and use it to populate the Taxonomy Breakdown table.
+
+Legacy coarse buckets (still shown in the high-level breakdown): Connectivity, Performance, Query/Index, Upgrade, Environment/Sizing, Product, Training, Admin, Terraform/CLI/API.
 
 ## Step 4 — Draft the Risk Register Report
 Use this exact structure. Document is INTERNAL ONLY.
 
 \`\`\`markdown
-# {Account Name}: Risk Register Report
+# Risk Register Report
+
+_The DOCX / PDF cover already prints the account name; do NOT repeat it in the H1 — keep this heading literally as \`# Risk Register Report\`. The "Trend / Trend Micro Incorporated" duplication came from emitting the company name in both places._
 
 INTERNAL DOCUMENT ONLY - NOT TO BE SHARED WITH THE CUSTOMER
 
 **Author(s):** MongoDB Technical Services
 **Date Finalized:** {date}
 
+## Account Risk Rating
+
+**Overall:** \`RED\` / \`YELLOW\` / \`GREEN\` — emit exactly one of those three uppercase tokens inside inline backticks, followed by a 1-sentence rationale.
+
+**Why:** {one sentence summarizing the dominant driver — e.g. *"Two open Critical technical risks combined with frustrated customer sentiment heading into a 3-month renewal window."*}
+
+| Driver | Signal |
+|--------|--------|
+| Technical severity | {e.g. "2 Critical, 4 Significant; 1 regression"} |
+| Customer sentiment | {Frustrated / Mixed / Neutral / Cooperative} — cite 1-2 evidence cases or phrases |
+| Commercial context | {renewal proximity, churn/competitive signals, cooperative posture toward TS} |
+
+## Renewal / Commercial Context
+{2-3 sentences of commercial framing: renewal date / window, ARR trajectory if evident, competitive pressure (DocumentDB, Aurora, Cosmos DB mentions in cases or Slack), sentiment trend vs prior report. This is GTM framing, not a to-do list. If no signals are present in evidence, write "No commercial signals surfaced in the case-intelligence evidence or Glean artifacts for this period." and move on.}
+
 ## Executive Summary
 {2-3 paragraphs: what prompted this review, the scope (number of cases, timeframe), key findings summary, and why it matters for the account relationship. If evidence is thin, add a caveat about confidence. End with a forward-looking statement about recommended engagement.}
 
+## Regression Alerts
+_(Emit this section ONLY when a Prior Report Context is provided AND at least one current risk carries the \`REGRESSION\` tag. Omit the heading entirely otherwise — do NOT emit an empty section.)_
+
+| Risk # | Title | Prior mitigation date | What was supposed to be fixed | What is recurring now |
+|--------|-------|-----------------------|------------------------------|----------------------|
+| ... | ... | {Mon YYYY} | ... | ... |
+
 ## Key Findings
-| # | Risk Identified | Severity | Confidence | Frequency of Risk | Impact of Taking No Action |
-|---|-----------------|----------|------------|-------------------|----------------------------|
-| 1 | ... | Critical / Significant / Roadmap Planning | High / Medium / Low | High / Medium / Low | ... |
+Every risk carries a \`Category\` tag. A risk register is not just technical fixes — it also owns the internal-process, customer-behaviour, and commercial risks that land on the same account. Use exactly one of:
+- \`Technical\` — concrete server/driver/config/schema change.
+- \`Interim\` — short-term safety-valve action pending a durable technical fix (e.g. TCMalloc tunable until 8.0 upgrade, targeted OIS until index programme).
+- \`TS-Process\` — internal TS / Support-ops gap on this account: case auto-closure, severity misuse, handover gap, inconsistent follow-through.
+- \`Customer-Behaviour\` — customer-side governance gap: declined mitigations, no recommendation-tracking cadence, over-reliance on manual monitoring.
+- \`Commercial\` — renewal / sentiment / competitive risk surfaced by evidence (not just narrative — there must be a case citation, Slack thread, or PS note that supports it).
+
+| # | Risk Identified | Category | Taxonomy | Severity | Confidence | Frequency | Change from prior | Impact of Taking No Action |
+|---|-----------------|----------|----------|----------|------------|-----------|-------------------|----------------------------|
+| 1 | ... | \`Technical\` | \`query-performance\` | Critical / Significant / Roadmap Planning | High / Medium / Low | High / Medium / Low | \`NEW\` / \`RECURRING-OPEN\` / \`REGRESSION\` / \`PERSISTED-WORSE\` | ... |
+
+### Risk Detail
+For EVERY risk in the Key Findings table, emit a block in the exact shape below. Reproduce evidence snippets exactly as they appear in the case-intelligence artifacts — do not rewrite technical specifics as prose. Never include the words "verbatim", "VERBATIM", or "(verbatim)" in the output.
+
+#### Risk #{N} — {Short title} · \`{taxonomy-id}\` · \`{change-from-prior tag}\`
+
+##### Evidence
+- **Cases:** [Case 0XXXXXXX](https://hub.corp.mongodb.com/case/0XXXXXXX), ...
+- **Representative query / command:** single-line → inline \`<snippet>\`; multi-line → a fenced \`\`\`javascript / \`\`\`sql block.
+- **Representative error / log:** single code or short phrase → inline; **stack trace or multi-line log → always a fenced \`\`\`log block**, never inline \`code\` spans. E.g.
+
+  \`\`\`log
+  do_exit+0x78/0x3e8
+  do_group_exit+0x3c/0xa0
+  get_signal+0x72c/0x758
+  \`\`\`
+- **Server / driver versions seen:** e.g. MongoDB 7.0.14, Node.js driver 6.3.0.
+- **Indexes discussed:** inline literal spec, e.g. \`{ customerId: 1, orderDate: -1 }\`.
+- **Config / tuning params referenced:** inline, e.g. \`maxPoolSize=200\`.
+
+##### Why the prior mitigation did not stick _(emit ONLY when tag is \`REGRESSION\`; omit otherwise)_
+- At least one concrete hypothesis: partial fix, config drift, new cluster or region onboarded, driver rollback, etc. Cite evidence.
+
+##### Recommendation
+- **Action:** one-sentence exact change.
+- **Target:** specific collection / config file / command / driver setting.
+- **Parameters:** concrete literal values, e.g. \`{ customerId: 1, orderDate: -1 }\`, \`maxPoolSize: 500\`.
+- **Example command:** single-line → inline; multi-line → a fenced \`\`\`shell block:
+
+  \`\`\`shell
+  mongosh --eval 'db.orders.createIndex({ customerId: 1, orderDate: -1 })'
+  \`\`\`
+
+**Sources:** A single line at the END of every Risk Detail block listing all source links the risk draws on, separated by " · ". Cases, JIRAs, and Slack threads each as a markdown link. Even though these sources also appear inline within the Evidence and Recommendation copy, this line lets a reviewer audit provenance at a glance — Banque-style.
+
+Example:
+
+\`\`\`
+**Sources:** [Case 01571156](https://hub.corp.mongodb.com/case/01571156) · [Case 01571856](https://hub.corp.mongodb.com/case/01571856) · [HELP-91610](https://jira.mongodb.org/browse/HELP-91610) · [csm-trend-micro · Mar 12 thread](https://mongodb.enterprise.slack.com/archives/...)
+\`\`\`
+
+## Interim Mitigations
+_(Short-term safety-valve actions that hold the line until the durable technical fix lands. Emit this section only if at least one Key Findings risk has \`Category: Interim\` OR at least one Technical risk has a known durable-fix ETA > 30 days AND a tactical hold-over action exists. Omit entirely otherwise.)_
+
+| Risk # | Interim action | Owner | ETA | Durable fix it replaces |
+|--------|----------------|-------|-----|-------------------------|
+| {N} | e.g. Set \`tcmallocReleaseRate=0.5\` on \`instance7\` | TS / Darwinbox ops | 2 weeks | 8.0 upgrade (Risk #2) |
+
+## TS Process & Handover Risks
+_(INTERNAL actions for MongoDB TS / Support Ops. These are action items for MongoDB, NOT the customer. One bullet per observed pattern with evidence and a specific follow-up. If evidence does not support any pattern, write "No TS process gaps surfaced in the evidence for this period." and move on — do NOT fabricate.)_
+
+- **{Pattern e.g. Case auto-closure}:** observed in {specific cases} — {one-sentence description}. **Follow-up:** {specific TS owner-ready action, e.g. "review severity calibration with TSE pool handling cases opened 2026-Q1 for Darwinbox; establish handover checklist for NTSE coverage gaps"}.
+- **{Severity misuse / handover gap / inconsistent follow-through / …}:** {evidence}. **Follow-up:** {action}.
+
+## Customer Engagement & Behaviour
+_(Customer-side governance items that MongoDB should drive in partnership. Behaviour-change items, not technical fixes. Again, one bullet per observed pattern with evidence. Write "No customer-side governance gaps surfaced in the evidence." if the register has no support for any pattern.)_
+
+- **{Pattern e.g. Recommendations not tracked}:** {evidence — e.g. "recommendations from the Jul 2025 PS review cases 01547215 and 01561638 were not implemented"}. **Follow-up:** {action — e.g. "establish monthly recommendation-review cadence between CSM and Darwinbox DBA lead; close the loop by 2026-06-01"}.
+- **{Declined mitigations / no change-tracking / over-reliance on TS monitoring / …}:** {evidence}. **Follow-up:** {action}.
 
 ## Case Review Summary
 | Field | Value |
@@ -82,7 +184,7 @@ INTERNAL DOCUMENT ONLY - NOT TO BE SHARED WITH THE CUSTOMER
 
 *Note: If some cases are unrelated (billing, portal questions), discount them and note the total vs reviewed count.*
 
-**Case breakdown by technical area:**
+**Case breakdown by technical area (high-level):**
 | Technical Area | Count |
 |----------------|-------|
 | Connectivity / Networking | {N} ({%}) |
@@ -94,15 +196,22 @@ INTERNAL DOCUMENT ONLY - NOT TO BE SHARED WITH THE CUSTOMER
 | Terraform / CLI / API tools | {N} ({%}) |
 | Atlas Administration Issues | {N} ({%}) |
 
+**Case breakdown by taxonomy (granular — one row per id that appears):**
+| Taxonomy (id) | Count |
+|---------------|-------|
+| \`query-performance\` | {N} ({%}) |
+| \`connectivity\` | {N} ({%}) |
+| ... (emit rows only for ids that actually appear in case-intelligence) | |
+
 ## Recommendations
 {Use a markdown table for recommendations. Each row should map to a specific risk and be specific about deliverables.}
 
-| # | Recommendation | Severity | Deliverable | Expected Outcome |
-|---|----------------|----------|-------------|------------------|
-| 1 | {Specific action} | Critical Risk #1 | {Concrete deliverable} | {Expected outcome} |
-| 2 | {Specific action} | Critical Risk #2 | {Concrete deliverable} | {Expected outcome} |
-| 3 | {Specific action} | Significant Risk #3 | {Concrete deliverable} | {Expected outcome} |
-| 4 | {Specific action} | Roadmap Planning Risk #N | {Concrete deliverable} | {Expected outcome} |
+| # | Recommendation (literal — concrete params, not general advice) | Severity | Deliverable | Expected Outcome |
+|---|----------------------------------------------------------------|----------|-------------|------------------|
+| 1 | e.g. "Create compound index \`{ customerId: 1, orderDate: -1 }\` on \`orders\` to eliminate COLLSCAN on $in+$sort queries seen in cases 01561638 / 01562914" | Critical Risk #1 | {Concrete deliverable} | {Expected outcome} |
+| 2 | e.g. "Set \`maxPoolSize=500\` and \`serverSelectionTimeoutMS=30000\` in the Node.js driver (currently 50/5000); addresses pool-starvation pattern in cases 01558368 / 01559716" | Critical Risk #2 | {Concrete deliverable} | {Expected outcome} |
+| 3 | {Specific action — include exact params} | Significant Risk #3 | {Concrete deliverable} | {Expected outcome} |
+| 4 | {Specific action — include exact params} | Roadmap Planning Risk #N | {Concrete deliverable} | {Expected outcome} |
 
 ## Notes & Anecdotes
 {Bullet points of raw observations from case review. Focus on behavioral patterns:
@@ -122,13 +231,9 @@ Include specific case numbers and source attribution for each observation.}
 ### C. Account Timeline
 | Date | Ticket / Reference | Summary |
 |------|-------------------|---------|
-| {Mon DD, YY} | {Case/HELP/Slack link} | {What happened and outcome} |
-### D. LGTM Tracking
-| Reviewer | Role | LGTM Date |
-|----------|------|-----------|
-| {name or —} | AE | — |
-| {name or —} | CSM | — |
-| {name or —} | PS | — |
+| {Mon DD, YY} | {Case/HELP/Slack link} | {What happened and outcome — see formatting rule below} |
+
+_Formatting rule for the **Summary** cell: prefer 2–4 short bullets ("- bullet text") over a single run-on sentence. One bullet per distinct event. Keep each bullet ≤ 18 words. Wrap any inline JIRA / case / Slack mention as a markdown link, not plain text. This is the cell pattern that makes the Banque-style timeline scannable._
 \`\`\`
 
 ## Step 5 — Review Checklist
@@ -141,7 +246,7 @@ Include specific case numbers and source attribution for each observation.}
 - Executive summary matches findings
 
 ## Step 6 — Delivery
-Acquire LGTM from AE, CSM, PS, TS. Deliver to account team only. Any customer-facing share should be a presentation at a QBR, not the raw register.
+Deliver to the account team only. Any customer-facing share should be a presentation at a QBR, not the raw register.
 `;
 
 /**
@@ -207,7 +312,7 @@ export function buildGleanChatQueries(
         `For CSM: accept evidence from opportunity-level "Account CSM" or "Primary CSM" fields, ` +
         `not just the formal account-team role. If someone is listed as CSM on ANY Zomato opportunity, include them. ` +
         `If a role has no supporting evidence, set Name to "—". NEVER write "pending". ` +
-        `After the table, add: **High-context individuals:** {names of TS/PS/EM who should LGTM}. Cite sources.`,
+        `After the table, add: **High-context individuals:** {names of TS/PS/EM who should review this report before delivery}. Cite sources.`,
     },
     {
       label: "Open risks, RCAs, unresolved recommendations",
@@ -274,17 +379,32 @@ export function buildGleanChatQueries(
  * The app executes these via the Glean MCP when the user proceeds from
  * the Context step, so the report drafting step starts with context already loaded.
  */
-export function buildGleanQueries(accountName: string): {
+export interface GleanQueryPlan {
   label: string;
   query: string;
   app?: string;
-}[] {
-  const q = (label: string, query: string, app?: string) => ({
+  /** When present, overrides the default `{ query, app, pageSize }` args
+   *  sent to `/api/glean/search`. Use for calls that need `exhaustive`,
+   *  `after`, or `updated` filters (e.g. the servicecloud case search). */
+  args?: Record<string, unknown>;
+}
+
+export function buildGleanQueries(
+  accountName: string,
+  timeframeMonths = 1,
+): GleanQueryPlan[] {
+  const q = (label: string, query: string, app?: string): GleanQueryPlan => ({
     label,
     query,
     app,
   });
   return [
+    {
+      label: "Support cases (servicecloud)",
+      query: accountName,
+      app: "servicecloud",
+      args: buildCaseSearchArgs({ accountName, timeframeMonths }),
+    },
     q("Engagement overview", `${accountName} engagement overview`),
     q("Account team / AE / CSM", `${accountName} account team AE CSM`),
     q("Account team (Salesforce)", `${accountName} account owner account executive customer success manager professional services`, "salesforce"),
@@ -310,158 +430,6 @@ export function buildGleanQueries(accountName: string): {
 }
 
 // ---------------------------------------------------------------------------
-// LGTM reviewer extraction
-// ---------------------------------------------------------------------------
-
-export interface LgtmReviewers {
-  ae: string;
-  csm: string;
-  ps: string;
-  ts: string;
-}
-
-/**
- * Parse a name from a markdown table cell or inline text, stripping
- * parenthetical suffixes like "(Senior Enterprise AE)".
- */
-function parseName(raw: string): string {
-  const name = raw.trim().replace(/\s*\([^)]*\)/g, "").trim();
-  if (!name || name === "—" || name === "-" || /^name$/i.test(name)) return "—";
-  // Reject header placeholders
-  if (/^(role|reviewer|source|notes)$/i.test(name)) return "—";
-  return name;
-}
-
-/**
- * Scan all pre-gathered artifacts for account-team / stakeholder data and
- * extract AE, CSM, PS, and TS reviewer names. Used to inject an explicit
- * LGTM block into the prompt so the model doesn't have to infer it.
- */
-export function extractLgtmReviewers(
-  artifacts: Array<{ kind: string; label: string; data: unknown }>,
-): LgtmReviewers {
-  const result: LgtmReviewers = { ae: "—", csm: "—", ps: "—", ts: "—" };
-
-  // Collect all artifact text — prioritise stakeholder/account-team chat
-  // artifacts but also scan every other artifact as fallback.
-  const allText = artifacts
-    .map((a) =>
-      typeof a.data === "string" ? a.data : JSON.stringify(a.data),
-    )
-    .join("\n\n");
-
-  if (!allText.trim()) return result;
-
-  // Separator pattern: any dash (hyphen, en, em), colon, or whitespace combo
-  // Separator: space, colon, or unicode dashes — excludes bare hyphen to
-  // avoid matching "csm-accountname" Slack channel prefixes as a CSM name.
-  const SEP = String.raw`[\s\u2012\u2013\u2014:]+`;
-
-  // --- Strategy 1: markdown table rows  | Role | Name | ... ---
-  const tableRow = /\|\s*([^|\n]+?)\s*\|\s*([^|\n]+?)\s*\|/g;
-  // Words that indicate a header row — reject if the name column matches
-  const headerWords = /^(?:name|reviewer|source|notes|role|value|field|-+)$/i;
-  let m: RegExpExecArray | null;
-  while ((m = tableRow.exec(allText)) !== null) {
-    const role = m[1].trim().replace(/\*+/g, "").toLowerCase();
-    const name = parseName(m[2]);
-    if (name === "—" || headerWords.test(name)) continue;
-    if (/\bae\b|account exec|account owner|owner\/ae|owner\s*ae/.test(role) && result.ae === "—")
-      result.ae = name;
-    else if (
-      /\bcsm\b|customer success manager|primary csm|account csm/.test(role) &&
-      result.csm === "—"
-    )
-      result.csm = name;
-    else if (
-      /\bps\b|professional services/.test(role) &&
-      !/\bts\b/.test(role) &&
-      result.ps === "—"
-    )
-      result.ps = name;
-    else if (
-      /\bts\b|technical services|tse|ts manager|\bntse\b|tam\b/.test(role) &&
-      result.ts === "—"
-    )
-      result.ts = name;
-  }
-
-  // --- Strategy 2: inline text  "Primary CSM – Aryan Garg" or "CSM: Aryan Garg" ---
-  const inline: Array<[RegExp, keyof LgtmReviewers]> = [
-    [
-      new RegExp(
-        String.raw`(?:account executive|account owner|owner\/ae|owner\s*ae|senior enterprise ae|\bAE\b)${SEP}([^\n,|*\]]+)`,
-        "i",
-      ),
-      "ae",
-    ],
-    [
-      new RegExp(
-        String.raw`(?:primary csm|account csm|customer success manager|\bCSM\b)${SEP}([^\n,|*\]]+)`,
-        "i",
-      ),
-      "csm",
-    ],
-    [
-      new RegExp(
-        String.raw`(?:professional services|\bPS\b)${SEP}([^\n,|*\]]+)`,
-        "i",
-      ),
-      "ps",
-    ],
-    [
-      new RegExp(
-        String.raw`(?:technical services|ts manager|\bTSE\b|\bTS\b)${SEP}([^\n,|*\]]+)`,
-        "i",
-      ),
-      "ts",
-    ],
-  ];
-  for (const [regex, key] of inline) {
-    if (result[key] !== "—") continue;
-    const match = allText.match(regex);
-    if (match) {
-      const name = parseName(match[1]);
-      if (name !== "—") result[key] = name;
-    }
-  }
-
-  // --- Strategy 3: "set as Account CSM" / "is the CSM" patterns in prose ---
-  const prose: Array<[RegExp, keyof LgtmReviewers]> = [
-    [/([A-Z][a-z]+(?: [A-Z][a-z]+)+) (?:is|was) (?:the |set as )?(?:primary |account )?CSM/i, "csm"],
-    [/([A-Z][a-z]+(?: [A-Z][a-z]+)+) (?:is|was) (?:the |set as )?(?:account )?(?:executive|AE)\b/i, "ae"],
-    [/set as (?:the )?(?:Account )?CSM[^\n]*?(?:for|on)[^\n]*?by ([A-Z][a-z]+(?: [A-Z][a-z]+)+)/i, "csm"],
-  ];
-  for (const [regex, key] of prose) {
-    if (result[key] !== "—") continue;
-    const match = allText.match(regex);
-    if (match) {
-      const name = parseName(match[1]);
-      if (name !== "—") result[key] = name;
-    }
-  }
-
-  // --- Strategy 4: Hub-style label blocks  "OWNER/AE\nSharad Kumar Gupta" ---
-  // Hub dumps fields as ALL-CAPS label on one line, value on next line.
-  const hubFields: Array<[RegExp, keyof LgtmReviewers]> = [
-    [/OWNER\/AE\s*\n([^\n]+)/i, "ae"],
-    [/\bCSM\b\s*\n([^\n]+)/i, "csm"],
-    [/\bNTSE\b\s*\n([^\n]+)/i, "ts"],
-    [/PS\s+REGIONAL\s+DIRECTOR\s*\n([^\n]+)/i, "ps"],
-  ];
-  for (const [regex, key] of hubFields) {
-    if (result[key] !== "—") continue;
-    const match = allText.match(regex);
-    if (match) {
-      const name = parseName(match[1]);
-      if (name !== "—") result[key] = name;
-    }
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
 // Auto Triage case intelligence — prompt block builder
 // ---------------------------------------------------------------------------
 
@@ -480,8 +448,7 @@ interface CaseIntelligenceData {
  * If a case-intelligence artifact is present, render it as a prompt block
  * so the final-synthesis LLM call sees per-case technical depth (problem /
  * environment / root cause / resolution, plus similar-case precedents, plus
- * account-level pattern analysis). This is the bit that turns generic
- * output into specific technical recommendations.
+ * account-level pattern analysis).
  *
  * Returns an empty string if no case-intelligence artifact exists.
  */
@@ -515,7 +482,7 @@ export function formatCaseIntelligenceBlock(
 
   const healthBlocks = data.accountHealth
     .filter((h) => h.markdown && !h.error)
-    .map((h, i) => {
+    .map((h) => {
       const label =
         data.accountHealth.length === 1
           ? "Account support health (from Auto Triage)"
@@ -535,51 +502,4 @@ export function formatCaseIntelligenceBlock(
     sections.push("", "### Cross-case patterns", healthBlocks);
   }
   return sections.join("\n\n");
-}
-
-/**
- * Build the explicit LGTM reviewer block to inject into the prompt.
- *
- * - If all four roles were extracted by regex → inject as a strict "use these
- *   exactly" table so the model doesn't hallucinate.
- * - If any role is "—" (regex missed) → also pass the raw stakeholder
- *   artifact(s) as a JSON block and ask the model to fill the gaps itself.
- *   This is more reliable than regex for prose formats like
- *   "Account Executive (AE / Account Owner) – Andrew Gasser".
- */
-export function buildLgtmBlock(
-  artifacts: Array<{ kind: string; label: string; data: unknown }>,
-): string {
-  const r = extractLgtmReviewers(artifacts);
-  const allExtracted =
-    r.ae !== "—" && r.csm !== "—" && r.ps !== "—";
-
-  const heading = allExtracted
-    ? `## Pre-Extracted LGTM Reviewer Names (use these exactly in Appendix D — do NOT override with "—" or "pending")`
-    : `## Pre-Extracted LGTM Reviewer Names (use where filled; for any "—" entries, find the correct name in the pre-gathered Glean artifacts below — look especially in artifacts whose labels contain "Stakeholder", "Account team", or "Salesforce")`;
-
-  const lines = [
-    heading,
-    "| Reviewer | Role |",
-    "|----------|------|",
-    `| ${r.ae} | AE |`,
-    `| ${r.csm} | CSM |`,
-    `| ${r.ps} | PS |`,
-  ];
-
-  if (!allExtracted) {
-    // Point to the artifact labels rather than re-embedding content that is
-    // already present in the chatBlocks / pre-gathered artifacts section.
-    const stakeholderLabels = artifacts
-      .filter((a) => /stakeholder|account.?team|salesforce/i.test(a.label))
-      .map((a) => `"${a.label}"`);
-    if (stakeholderLabels.length > 0) {
-      lines.push(
-        "",
-        `→ Relevant pre-gathered artifacts: ${stakeholderLabels.join(", ")}`,
-      );
-    }
-  }
-
-  return lines.join("\n");
 }

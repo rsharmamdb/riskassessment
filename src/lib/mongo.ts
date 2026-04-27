@@ -11,7 +11,7 @@
  *   - artifacts         — delta-fetch cache of Glean gathered artifacts
  *   - case_intelligence — per-case Auto Triage cache (summary + precedents)
  *   - events            — usage telemetry for /admin/usage
- *   - lgtm, risks       — review state attached to reports
+ *   - risks             — risk-status updates attached to reports
  */
 
 import { MongoClient, type Db, type Document } from "mongodb";

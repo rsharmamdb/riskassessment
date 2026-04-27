@@ -10,13 +10,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "docx": "^9.6.1",
+    "marked": "^18.0.2",
     "mongodb": "^7.1.1",
     "next": "^15.0.3",
     "puppeteer": "^24.41.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "undici": "^8.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",

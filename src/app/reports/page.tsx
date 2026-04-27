@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Card, CardBody, CardHeader } from "@/components/ui";
+import { parseRiskRating, ratingChipClasses } from "@/lib/parse-risk-rating";
 
 interface AccountRow {
   _id: string;
@@ -11,6 +12,7 @@ interface AccountRow {
   hasReport: boolean;
   salesforceId?: string;
   canonicalName?: string;
+  report?: string;
 }
 
 export default function ReportsIndexPage() {
@@ -41,9 +43,6 @@ export default function ReportsIndexPage() {
   }
 
   const withReport = accounts.filter((a) => a.hasReport);
-  const stale = withReport.filter(
-    (a) => Date.now() - new Date(a.updatedAt).getTime() > 30 * 24 * 60 * 60 * 1000,
-  );
 
   return (
     <div className="space-y-6">
@@ -62,13 +61,6 @@ export default function ReportsIndexPage() {
         </Link>
       </div>
 
-      {stale.length > 0 && (
-        <div className="border border-warn/35 bg-warn/10 px-4 py-3 text-sm text-warn" style={{ borderRadius: '8px' }}>
-          ⚑ {stale.length} account{stale.length !== 1 ? "s have" : " has"} not been refreshed in 30+ days:{" "}
-          {stale.map((a) => a.canonicalName || a._id).join(", ")}
-        </div>
-      )}
-
       <Card>
         <CardHeader title="All accounts" />
         <CardBody>
@@ -83,6 +75,7 @@ export default function ReportsIndexPage() {
                 <thead>
                   <tr className="border-b border-ink-800 text-ink-500 text-xs">
                     <th className="text-left pb-3 pr-4 font-medium">Account</th>
+                    <th className="text-left pb-3 pr-4 font-medium">Risk</th>
                     <th className="text-left pb-3 pr-4 font-medium">Last updated</th>
                     <th className="text-left pb-3 pr-4 font-medium">Artifacts</th>
                     <th className="text-left pb-3">Actions</th>
@@ -90,11 +83,11 @@ export default function ReportsIndexPage() {
                 </thead>
                 <tbody>
                   {withReport.map((a) => {
-                    const isStale =
-                      Date.now() - new Date(a.updatedAt).getTime() > 30 * 24 * 60 * 60 * 1000;
                     const hubUrl = a.salesforceId
                       ? `https://hub.corp.mongodb.com/account/${a.salesforceId}/overview`
                       : null;
+                    const rating = parseRiskRating(a.report);
+                    const ratingCls = ratingChipClasses(rating);
                     return (
                       <tr key={a._id} className="border-b border-ink-800/50 hover:bg-ink-900">
                         <td className="py-3 pr-4 font-medium text-ink-100">
@@ -111,27 +104,44 @@ export default function ReportsIndexPage() {
                             <span className="capitalize">{a.canonicalName || a._id}</span>
                           )}
                         </td>
+                        <td className="py-3 pr-4">
+                          {rating ? (
+                            <span
+                              className={`inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 border ${ratingCls.bg} ${ratingCls.border} ${ratingCls.text}`}
+                              style={{ borderRadius: "999px" }}
+                              title={ratingCls.label}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${ratingCls.dot}`} />
+                              {rating}
+                            </span>
+                          ) : (
+                            <span className="text-ink-600 text-[10px]">—</span>
+                          )}
+                        </td>
                         <td className="py-3 pr-4 text-ink-500 text-xs whitespace-nowrap">
                           {new Date(a.updatedAt).toLocaleDateString("en-US", {
                             month: "short",
                             day: "numeric",
                             year: "numeric",
                           })}
-                          {isStale && (
-                            <span className="ml-2 text-warn">⚑ stale</span>
-                          )}
                         </td>
                         <td className="py-3 pr-4 text-ink-500 text-xs tabular-nums">
                           {a.artifactCount ?? "—"}
                         </td>
                         <td className="py-3">
                           <div className="flex items-center gap-3 text-xs">
-                            <Link
-                              href={`/reports/${encodeURIComponent(a._id)}`}
-                              className="text-accent-500 hover:underline"
-                            >
-                              View report →
-                            </Link>
+                            {a.salesforceId ? (
+                              <Link
+                                href={`/reports/${encodeURIComponent(a.salesforceId)}`}
+                                className="text-accent-500 hover:underline"
+                              >
+                                View report →
+                              </Link>
+                            ) : (
+                              <span className="text-ink-600" title="No Salesforce ID recorded for this report">
+                                View report —
+                              </span>
+                            )}
                             <Link
                               href={`/?account=${encodeURIComponent(a._id)}`}
                               className="text-ink-500 hover:text-ink-300 hover:underline"

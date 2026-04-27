@@ -3,15 +3,35 @@
  * POST /api/db/artifacts                 — upsert artifacts (with per-query timestamps)
  */
 import { NextResponse } from "next/server";
+import type { Collection, Document } from "mongodb";
 import { getDb } from "@/lib/mongo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+let _indexesEnsured = false;
+async function ensureIndexes(col: Collection<Document>) {
+  if (_indexesEnsured) return;
+  try {
+    // One artifact per (salesforceId, label, kind). Sparse so legacy
+    // name-only rows don't violate.
+    await col.createIndex(
+      { salesforceId: 1, label: 1, kind: 1 },
+      { name: "sfId_label_kind_unique", unique: true, sparse: true },
+    );
+    // Lookup-by-account index for callers that only have a name.
+    await col.createIndex({ account: 1, label: 1, kind: 1 }, { name: "account_label_kind" });
+    _indexesEnsured = true;
+  } catch (err) {
+    console.warn("[artifacts] ensureIndexes failed:", (err as Error).message);
+  }
+}
+
 export async function GET(req: Request) {
   try {
     const db = await getDb();
     const col = db.collection("artifacts");
+    await ensureIndexes(col);
     const url = new URL(req.url);
     const sfId = url.searchParams.get("salesforceId");
     const account = url.searchParams.get("account");
@@ -24,10 +44,8 @@ export async function GET(req: Request) {
     // Prefer salesforceId lookup; fall back to account name
     const filter = sfId ? { salesforceId: sfId } : { account };
 
-    // Purge artifacts older than 30 days, then return the fresh ones
-    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    await col.deleteMany({ ...filter, fetchedAt: { $lt: cutoff } });
-
+    // Artifacts are retained indefinitely for historical analysis; the
+    // Wizard decides when to refresh them on an explicit user action.
     const docs = await col.find(filter).toArray();
     return NextResponse.json({ ok: true, artifacts: docs });
   } catch (err) {
@@ -49,6 +67,7 @@ export async function POST(req: Request) {
     }
     const db = await getDb();
     const col = db.collection("artifacts");
+    await ensureIndexes(col);
     const now = new Date().toISOString();
     // Use salesforceId as the canonical key when available
     const keyFilter = salesforceId
